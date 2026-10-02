@@ -1,0 +1,268 @@
+use pb::xiaomi::protocol::{self, DeviceInfo, DeviceStatus, device_status::Battery};
+use tokio::sync::oneshot;
+
+use crate::{
+    device::xiaomi::system::{L2PbExt, register_xiaomi_system_ext_on_l2packet},
+    ecs::{Component, access::with_device_component_mut},
+};
+
+use super::shared::{HasOwnerId, RequestSlot, SystemRequestExt, await_response};
+use crate::anyhow_site;
+
+#[derive(Component)]
+pub struct InfoSystem {
+    owner_id: String,
+    device_info_wait: RequestSlot<protocol::DeviceInfo>,
+    device_status_wait: RequestSlot<protocol::DeviceStatus>,
+    device_storage_wait: RequestSlot<protocol::StorageInfo>,
+}
+
+impl Default for InfoSystem {
+    fn default() -> Self {
+        Self::new(String::new())
+    }
+}
+
+impl InfoSystem {
+    pub fn new(owner_id: String) -> Self {
+        register_xiaomi_system_ext_on_l2packet::<Self>();
+        Self {
+            owner_id,
+            device_info_wait: RequestSlot::new(),
+            device_status_wait: RequestSlot::new(),
+            device_storage_wait: RequestSlot::new(),
+        }
+    }
+    pub async fn get_device_info(&mut self) -> anyhow::Result<DeviceInfo> {
+        await_response(
+            self.request_device_info(),
+            "Device info response not received",
+        )
+        .await
+    }
+
+    pub async fn get_device_status(&mut self) -> anyhow::Result<DeviceStatus> {
+        await_response(
+            self.request_device_status(),
+            "Device status response not received",
+        )
+        .await
+    }
+
+    pub async fn get_device_storage_info(&mut self) -> anyhow::Result<protocol::StorageInfo> {
+        await_response(
+            self.request_device_storage(),
+            "Device storage info response not received",
+        )
+        .await
+    }
+
+    pub fn request_device_info(&mut self) -> oneshot::Receiver<anyhow::Result<DeviceInfo>> {
+        let (rx, should_enqueue) = self.device_info_wait.prepare();
+        if should_enqueue {
+            self.enqueue_request(Self::build_system_packet(
+                protocol::system::SystemId::GetDeviceInfo,
+            ));
+        }
+        rx
+    }
+
+    pub fn request_device_status(&mut self) -> oneshot::Receiver<anyhow::Result<DeviceStatus>> {
+        let (rx, should_enqueue) = self.device_status_wait.prepare();
+        if should_enqueue {
+            self.enqueue_request(Self::build_system_packet(
+                protocol::system::SystemId::GetDeviceStatus,
+            ));
+        }
+        rx
+    }
+
+    pub fn request_device_storage(
+        &mut self,
+    ) -> oneshot::Receiver<anyhow::Result<protocol::StorageInfo>> {
+        let (rx, should_enqueue) = self.device_storage_wait.prepare();
+        if should_enqueue {
+            self.enqueue_request(Self::build_system_packet(
+                protocol::system::SystemId::GetStorageInfo,
+            ));
+        }
+        rx
+    }
+
+    fn enqueue_request(&mut self, request: protocol::WearPacket) {
+        self.enqueue_pb_request(request, "InfoSystem::enqueue_request");
+    }
+
+    fn build_system_packet(id: protocol::system::SystemId) -> protocol::WearPacket {
+        protocol::WearPacket {
+            r#type: protocol::wear_packet::Type::System as i32,
+            id: id as u32,
+            payload: None,
+        }
+    }
+}
+
+impl HasOwnerId for InfoSystem {
+    fn owner_id(&self) -> &str {
+        &self.owner_id
+    }
+}
+
+impl L2PbExt for InfoSystem {
+    fn on_pb_packet(&mut self, payload: pb::xiaomi::protocol::WearPacket) {
+        if let Some(pb::xiaomi::protocol::wear_packet::Payload::System(sys)) = payload.payload {
+            if let Some(sys_payload) = sys.payload {
+                match sys_payload {
+                    pb::xiaomi::protocol::system::Payload::DeviceInfo(dev_info) => {
+                        let dev_info_for_slot = dev_info.clone();
+                        let model = dev_info.model.clone();
+                        let serial_number = dev_info.serial_number.clone();
+                        let firmware_version = dev_info.firmware_version.clone();
+                        let product_device = dev_info.product_device.clone();
+                        let update_res = with_device_component_mut::<InfoComponent, _, _>(
+                            self.owner_id.clone(),
+                            move |comp| {
+                                comp.model = model;
+                                comp.sn = serial_number;
+                                comp.firmware_version = firmware_version;
+                                comp.product_device = product_device;
+                            },
+                        );
+
+                        match update_res {
+                            Ok(_) => {
+                                crate::events::emit(crate::events::CoreEvent::DeviceStateChanged(
+                                    crate::events::DeviceStateChanged {
+                                        device_addr: self.owner_id.clone(),
+                                    },
+                                ));
+                                self.device_info_wait.fulfill(dev_info_for_slot);
+                            }
+                            Err(err) => {
+                                let anyhow_err = anyhow_site!(
+                                    "failed to update info component with device info: {err:?}"
+                                );
+                                log::error!("{anyhow_err:?}");
+                                self.device_info_wait.fail(anyhow_err);
+                            }
+                        }
+                    }
+                    pb::xiaomi::protocol::system::Payload::DeviceStatus(dev_status) => {
+                        let dev_status_for_slot = dev_status.clone();
+                        let battery = dev_status.battery;
+                        let update_res = with_device_component_mut::<InfoComponent, _, _>(
+                            self.owner_id.clone(),
+                            move |comp| {
+                                comp.battery = Some(battery);
+                            },
+                        );
+
+                        match update_res {
+                            Ok(_) => {
+                                crate::events::emit(crate::events::CoreEvent::DeviceStateChanged(
+                                    crate::events::DeviceStateChanged {
+                                        device_addr: self.owner_id.clone(),
+                                    },
+                                ));
+                                self.device_status_wait.fulfill(dev_status_for_slot);
+                            }
+                            Err(err) => {
+                                let anyhow_err = anyhow_site!(
+                                    "failed to update info component with device status: {err:?}"
+                                );
+                                log::error!("{anyhow_err:?}");
+                                self.device_status_wait.fail(anyhow_err);
+                            }
+                        }
+                    }
+                    pb::xiaomi::protocol::system::Payload::StorageInfo(storage) => {
+                        let storage_for_slot = storage.clone();
+                        let total = storage.total;
+                        let used = storage.used;
+                        let update_res = with_device_component_mut::<InfoComponent, _, _>(
+                            self.owner_id.clone(),
+                            move |comp| {
+                                comp.storage.free = total - used;
+                                comp.storage.total = total;
+                            },
+                        );
+
+                        match update_res {
+                            Ok(_) => {
+                                crate::events::emit(crate::events::CoreEvent::DeviceStateChanged(
+                                    crate::events::DeviceStateChanged {
+                                        device_addr: self.owner_id.clone(),
+                                    },
+                                ));
+                                self.device_storage_wait.fulfill(storage_for_slot);
+                            }
+                            Err(err) => {
+                                let anyhow_err = anyhow_site!(
+                                    "failed to update info component with storage info: {err:?}"
+                                );
+                                log::error!("{anyhow_err:?}");
+                                self.device_storage_wait.fail(anyhow_err);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+pub struct StorageInfo {
+    pub total: u64,
+    pub free: u64,
+}
+
+#[derive(Component, serde::Serialize)]
+pub struct InfoComponent {
+    //codename: String,
+    model: String,
+    sn: String,
+    firmware_version: String,
+    product_device: String,
+    battery: Option<Battery>,
+    storage: StorageInfo,
+}
+
+impl InfoComponent {
+    pub fn new() -> Self {
+        Self {
+            //codename: "".to_string(),
+            model: "".to_string(),
+            sn: "".to_string(),
+            firmware_version: "".to_string(),
+            product_device: "".to_string(),
+            battery: None,
+            storage: StorageInfo { total: 0, free: 0 },
+        }
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    pub fn serial_number(&self) -> &str {
+        &self.sn
+    }
+
+    pub fn firmware_version(&self) -> &str {
+        &self.firmware_version
+    }
+
+    pub fn product_device(&self) -> &str {
+        &self.product_device
+    }
+
+    pub fn battery(&self) -> Option<&Battery> {
+        self.battery.as_ref()
+    }
+
+    pub fn storage(&self) -> &StorageInfo {
+        &self.storage
+    }
+}

@@ -1,0 +1,62 @@
+name: Windows desktop
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - apps/**
+      - scripts/**
+      - .github/workflows/windows-build.yml
+  pull_request:
+
+concurrency:
+  group: windows-desktop-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: apps/desktop
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.23.0
+      - name: Set up Rust MSVC
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable-x86_64-pc-windows-msvc
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Frontend tests
+        run: |
+          $testFiles = Get-ChildItem tests -Filter *.test.mjs | ForEach-Object { $_.FullName }
+          node --test $testFiles
+      - name: Build frontend
+        run: pnpm run build
+      - name: Rust tests and Windows shell round trips
+        working-directory: apps/desktop/src-tauri
+        run: cargo test -p agent-command-pilot --lib --locked
+      - name: Build Windows installer
+        run: pnpm tauri build --bundles nsis
+      - name: Check release MCP and hook entrypoints
+        run: node ../../scripts/check-native-integrations.mjs src-tauri/target/release/agent-command-pilot.exe
+      - uses: actions/upload-artifact@v7
+        with:
+          name: agent-command-pilot-windows-x64
+          path: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 14

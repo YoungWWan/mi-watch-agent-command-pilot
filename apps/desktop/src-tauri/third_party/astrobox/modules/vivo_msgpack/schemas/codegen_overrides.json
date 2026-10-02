@@ -1,0 +1,148 @@
+{
+  "manual_types": [
+    {
+      "simple_name": "BindAuthRequest",
+      "bid": 15,
+      "cid": 1,
+      "message_kind": "request",
+      "fields": [
+        { "name": "open_id", "rust_type": "String", "write": "str" },
+        { "name": "random", "rust_type": "i32", "write": "i32" },
+        { "name": "aes_sign", "rust_type": "Vec<u8>", "write": "bin" },
+        { "name": "bid_version", "rust_type": "i32", "write": "i32" },
+        {
+          "name": "magic_phone",
+          "rust_type": "String",
+          "write": "str_non_empty_or",
+          "fallback": "***********"
+        }
+      ]
+    },
+    {
+      "simple_name": "BindBindRequest",
+      "bid": 15,
+      "cid": 3,
+      "message_kind": "request",
+      "fields": [
+        { "name": "confirm", "rust_type": "bool", "write": "bool" }
+      ]
+    },
+    {
+      "simple_name": "BindResetRequest",
+      "bid": 15,
+      "cid": 5,
+      "message_kind": "request",
+      "fields": []
+    },
+    {
+      "simple_name": "DeviceInfoRequest",
+      "bid": 25,
+      "cid": 2,
+      "message_kind": "request",
+      "fields": [
+        { "name": "unix_time_sec", "rust_type": "i32", "write": "i32" },
+        { "name": "gmt_timezone", "rust_type": "i32", "write": "i32" },
+        { "name": "os_type", "rust_type": "i32", "write": "i32" },
+        { "name": "millis", "rust_type": "i32", "write": "i32" },
+        {
+          "name": "timezone_offset_sec",
+          "rust_type": "Option<i32>",
+          "write": "optional_i32"
+        }
+      ]
+    },
+    {
+      "simple_name": "BidVersion",
+      "message_kind": "data",
+      "fields": [
+        { "name": "bid", "rust_type": "i32", "write": "i32" },
+        { "name": "version", "rust_type": "i32", "write": "i32" }
+      ]
+    },
+    {
+      "simple_name": "FeatureItem",
+      "message_kind": "data",
+      "fields": [
+        { "name": "key", "rust_type": "i32", "write": "i32" },
+        { "name": "value", "rust_type": "String", "write": "str" }
+      ]
+    },
+    {
+      "simple_name": "WatchBidVersionRequest",
+      "bid": 25,
+      "cid": 6,
+      "message_kind": "request",
+      "fields": [
+        { "name": "sync_bid_versions", "rust_type": "bool", "write": "bool" },
+        { "name": "sync_features", "rust_type": "bool", "write": "bool" },
+        { "name": "phone_bid_version", "rust_type": "i32", "write": "i32" },
+        {
+          "name": "bid_versions",
+          "rust_type": "Vec<BidVersion>",
+          "write": "array_bin_payload"
+        },
+        {
+          "name": "features",
+          "rust_type": "Option<Vec<FeatureItem>>",
+          "write": "optional_array_bin_payload"
+        }
+      ]
+    }
+  ],
+  "modules": [
+    {
+      "name": "bind",
+      "exports": [
+        "BindAuthRequest",
+        "BindAuthResponse",
+        "BindInitRequest",
+        "BindInitResponse",
+        "BindBindRequest",
+        "BindResetRequest",
+        "BindConnectConfirmRequest",
+        "BindConnectConfirmResponse",
+        "BindHFPConnRequest"
+      ],
+      "constants": [
+        { "name": "BID_BIND", "message": "BindAuthRequest", "value": "bid" },
+        { "name": "CID_AUTH", "message": "BindAuthRequest", "value": "cid" },
+        { "name": "CID_INIT", "message": "BindInitRequest", "value": "cid" },
+        { "name": "CID_BIND", "message": "BindBindRequest", "value": "cid" },
+        { "name": "CID_RESET", "message": "BindResetRequest", "value": "cid" },
+        {
+          "name": "CID_CONNECT_CONFIRM",
+          "message": "BindConnectConfirmRequest",
+          "value": "cid"
+        },
+        { "name": "CID_HFP_CONNECT", "message": "BindHFPConnRequest", "value": "cid" },
+        { "name": "DEFAULT_BID_VERSION", "type": "i32", "literal": "11" },
+        {
+          "name": "MAGIC_PHONE_PLACEHOLDER",
+          "type": "&str",
+          "literal": "\"***********\""
+        }
+      ]
+    },
+    {
+      "name": "device_info",
+      "exports": [
+        "BidVersion",
+        "FeatureItem",
+        "WatchBidVersionRequest",
+        "WatchBidVersionResponse",
+        "DeviceInfoRequest",
+        "WatchFirstSyncResp"
+      ],
+      "constants": [
+        { "name": "BID_DEVICE_INFO", "message": "DeviceInfoRequest", "value": "bid" },
+        { "name": "CID_FIRST_SYNC", "message": "WatchFirstSyncResp", "value": "request_cid" },
+        { "name": "CID_DEVICE_INFO", "message": "DeviceInfoRequest", "value": "cid" },
+        {
+          "name": "CID_WATCH_BID_VERSION",
+          "message": "WatchBidVersionRequest",
+          "value": "cid"
+        }
+      ]
+    }
+  ]
+}

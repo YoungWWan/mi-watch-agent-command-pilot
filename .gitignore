@@ -1,0 +1,38 @@
+# Build outputs
+target/
+dist/
+build/
+release-assets/
+
+# Node
+node_modules/
+.pnpm-debug.log*
+*.log
+
+# Watch quick app build outputs and local signing material
+.temp_watch/
+watch/**/*.rpk
+watch/sign/**/*.pem
+watch/src/common/config.js
+
+# Tauri
+gen/
+src-tauri/target/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local updater signing keys
+*.key
+*.p12
+*.pfx
+_docs/
+
+# Local credentials and Agent configuration backups
+.agent-command-pilot/
+.env
+.env.*
+!.env.example
+*.redmi-watch.bak
+local.properties

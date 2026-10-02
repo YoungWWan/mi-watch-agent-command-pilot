@@ -1,0 +1,43 @@
+{
+  "package": "com.young.watchcommand",
+  "name": "指令助手",
+  "versionName": "1.1.6",
+  "versionCode": 17,
+  "minPlatformVersion": 1000,
+  "icon": "/common/icon-v5.png",
+  "features": [
+    { "name": "system.fetch" },
+    { "name": "system.prompt" },
+    { "name": "system.vibrator" },
+    { "name": "system.storage" },
+    { "name": "system.router" },
+    { "name": "system.device" },
+    { "name": "system.brightness" },
+    { "name": "system.request" }
+  ],
+  "permissions": [
+    { "origin": "*" }
+  ],
+  "deviceTypeList": [
+    "watch"
+  ],
+  "config": {
+    "logLevel": "debug",
+    "designWidth": 432
+  },
+  "router": {
+    "entry": "pages/index",
+    "pages": {
+      "pages/index": {
+        "component": "index"
+      },
+      "pages/command": {
+        "component": "index"
+      }
+    }
+  },
+  "display": {
+    "backgroundColor": "#080c0b",
+    "titleBar": false
+  }
+}

@@ -1,0 +1,12 @@
+pub mod auth;
+pub mod cloud_bridge;
+pub mod erpc;
+pub mod file_v2_transfer;
+pub mod info;
+pub mod install;
+pub mod ota;
+pub mod resource;
+pub mod shared;
+pub mod sync;
+pub mod thirdparty_app;
+pub mod watchface;
