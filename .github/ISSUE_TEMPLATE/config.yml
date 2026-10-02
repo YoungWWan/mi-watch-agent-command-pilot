@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 贡献与反馈指南
+    url: https://github.com/YoungWWan/mi-watch-agent-command-pilot/blob/main/CONTRIBUTING.md
+    about: 查看提交问题、准备 PR、运行检查及真机验证的要求。

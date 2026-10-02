@@ -1,0 +1,27 @@
+name: 使用问题
+description: 询问安装、配置、兼容范围或使用方式。
+title: "[Question] "
+labels: [question]
+body:
+  - type: markdown
+    attributes:
+      value: 请先查看 README 和已有 Issue。公开提交时请移除密码、令牌、配对码、设备密钥及个人信息。
+  - type: textarea
+    id: question
+    attributes:
+      label: 你的问题
+      description: 说明你想完成什么，以及卡在了哪一步。
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 运行环境
+      description: 请写出桌面系统、应用版本、设备型号与固件版本；不涉及设备可以注明。
+    validations:
+      required: true
+  - type: textarea
+    id: attempts
+    attributes:
+      label: 已尝试的步骤
+      description: 附上相关文档链接、脱敏错误提示或截图。

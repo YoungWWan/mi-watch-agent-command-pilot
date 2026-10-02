@@ -1,0 +1,83 @@
+name: 问题反馈
+description: 报告崩溃、连接失败、安装异常或指令收发问题。
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Issue 是公开的。请先移除账号、密码、令牌、配对码、设备密钥、MAC 地址及其他个人信息，再上传日志或截图。
+        如问题涉及可被利用的安全漏洞，请先创建不含利用细节的联系请求，与维护者约定私下沟通方式。
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 我已搜索现有 Issue，没有发现相同问题。
+          required: true
+        - label: 我已移除日志和截图中的凭据与个人信息。
+          required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 问题所在功能
+      options:
+        - 桌面界面
+        - 小米账号与设备同步
+        - 蓝牙连接与快应用安装
+        - 手表界面与指令收发
+        - MCP 与 Agent 接入
+        - Hooks 与通知
+        - 桌面更新与打包
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 运行环境
+      description: 不涉及的项目请填写“不适用”；未知版本请说明。
+      value: |
+        - 桌面系统与版本：
+        - 桌面应用版本（或源码 commit）：
+        - 手表/手环型号与固件版本：
+        - 手表指令助手版本：
+        - AI 工具与版本：
+        - 连接方式与网络环境（请勿填写密钥或完整设备标识）：
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤
+      description: 从打开应用开始，写出能够再次触发问题的步骤。
+      placeholder: |
+        1. 打开……
+        2. 点击……
+        3. 出现……
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 写出错误提示、发生频率，以及是否每次都能复现。
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 脱敏日志
+      description: 只粘贴相关片段；没有日志可以留空。
+      render: text
+  - type: textarea
+    id: attachments
+    attributes:
+      label: 截图与补充信息
+      description: 可拖入截图；请说明尝试过的排查步骤或临时解决方式。
