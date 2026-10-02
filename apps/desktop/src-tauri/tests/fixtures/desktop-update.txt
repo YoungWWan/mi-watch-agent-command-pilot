@@ -1,0 +1,1 @@
+Signed desktop update test fixture for mi-watch-agent-command-pilot.

@@ -1,0 +1,14 @@
+<script>
+/**
+ * Redmi Watch 5 Command Hub Quick App
+ * Global Lifecycle and Config
+ */
+export default {
+  onCreate() {
+    console.info('PC Command App created on Redmi Watch 5');
+  },
+  onDestroy() {
+    console.info('PC Command App destroyed');
+  }
+};
+</script>

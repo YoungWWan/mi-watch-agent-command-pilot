@@ -1,0 +1,29 @@
+Agent Command Pilot (agent指令助手)
+Copyright (C) 2026 Young and project contributors.
+
+This product includes software developed by third parties:
+
+1. AstroBox-NG Public Modules (AstroBox-NG-Module-Core, Pb, Vivo-MsgPack, Bluetooth, BtClassicSpp)
+   Copyright (C) 2024-2026 AstralSight Studios <https://github.com/AstralSightStudios>
+   Licensed under GNU Affero General Public License v3.0 (AGPL-3.0).
+   Pinned Commits:
+   - AstroBox-NG-Module-Core: b7b8e94599ddad8435cdfb279790cf11cca0a392
+   - AstroBox-NG-Module-Pb: 03a92010056dd41af114f6f46fd612104b27bd7b
+   - AstroBox-NG-Module-Vivo-MsgPack: baa814b3d90454c127008a85ac307acf92b4914f
+   - AstroBox-NG-Module-Bluetooth: d855415cfb3b42fa064eb33eaebcc0a0d0720661
+   - AstroBox-NG-Plugin-BtClassicSpp: 9f8e8804038749260a43548152f50256e0b04ab8
+
+2. Tauri Framework
+   Copyright (C) Tauri Programme within The Commons Conservancy.
+   Licensed under MIT or Apache 2.0.
+
+3. AstroBox-Public Xiaomi Health protocol implementation
+   AstralSight Studios <https://github.com/AstralSightStudios>
+   Source: https://github.com/AstralSightStudios/AstroBox-Public/blob/main/src-tauri/src/auth.rs
+   Licensed under GNU Affero General Public License v3.0 (AGPL-3.0).
+   Adapted in apps/desktop/src-tauri/src/account/xiaomi_crypto.rs for signed,
+   encrypted Xiaomi Health requests and encrypted response decoding.
+
+4. GitHub Octicons mark-github icon
+   Copyright (c) GitHub, Inc.
+   Licensed under MIT. Full license: docs/licenses/octicons-MIT.txt.

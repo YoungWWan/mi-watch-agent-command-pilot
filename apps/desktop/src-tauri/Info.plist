@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSBluetoothAlwaysUsageDescription</key>
+  <string>通过蓝牙连接您的手表，检查指令助手版本并安装或升级手表应用。</string>
+  <key>NSBluetoothPeripheralUsageDescription</key>
+  <string>通过蓝牙连接您的手表，检查指令助手版本并安装或升级手表应用。</string>
+</dict>
+</plist>

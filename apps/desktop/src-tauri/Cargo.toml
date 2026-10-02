@@ -1,0 +1,67 @@
+[package]
+name = "agent-command-pilot"
+version = "1.1.0"
+default-run = "agent-command-pilot"
+description = "小米手表 AI 指令助手 - AI questions, approvals and completion reminders on your watch"
+authors = ["Young <young@project>"]
+license = "AGPL-3.0"
+edition = "2021"
+
+[workspace]
+members = [
+    ".",
+    "third_party/astrobox/modules/*",
+    "third_party/astrobox/plugins/*",
+]
+exclude = [
+    "third_party/astrobox/modules/app_esp32s3",
+]
+resolver = "3"
+
+[[bin]]
+name = "agent-command-pilot"
+path = "src/main.rs"
+
+[lib]
+name = "agent_command_pilot_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+path = "src/lib.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2.11.3", features = ["rustls-tls"] }
+tauri-plugin-opener = "2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.11"
+parking_lot = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+md-5 = "0.10"
+sha1 = "0.10"
+rc4 = "0.1"
+axum = { version = "0.7", features = ["ws"] }
+tower-http = { version = "0.5", features = ["cors"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies"] }
+rand = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+local-ip-address = "0.6"
+regex = "1.10"
+toml_edit = { version = "0.22.27", features = ["serde"] }
+
+# AstroBox embedded modules
+corelib = { path = "third_party/astrobox/modules/core", default-features = false }
+pb = { path = "third_party/astrobox/modules/pb" }
+vivo-msgpack = { path = "third_party/astrobox/modules/vivo_msgpack" }
+bluetooth = { path = "third_party/astrobox/modules/bluetooth" }
+btclassic-spp = { path = "third_party/astrobox/plugins/btclassic-spp" }
+tauri-plugin-updater = "2.12"
+
+[dev-dependencies]
+tauri = { version = "2.11.3", features = ["test"] }

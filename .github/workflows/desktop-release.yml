@@ -1,0 +1,129 @@
+name: Desktop release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing version tag, for example v1.1.0'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            platform: darwin-aarch64
+            bundles: app,dmg
+            executable: agent-command-pilot
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            platform: darwin-x86_64
+            bundles: app,dmg
+            executable: agent-command-pilot
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            platform: windows-x86_64
+            bundles: nsis
+            executable: agent-command-pilot.exe
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.23.0
+      - name: Prepare stable Rust toolchain
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup target add '${{ matrix.target }}'
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Frontend and release tests
+        run: node --test tests/*.test.mjs
+      - name: Rust tests
+        working-directory: apps/desktop/src-tauri
+        run: cargo test -p agent-command-pilot --lib --locked
+      - name: Configure this repository as the update source
+        run: node ../../scripts/desktop-release.mjs prepare --tag "$RELEASE_TAG"
+      - name: Build signed desktop installers
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo 'Add the TAURI_SIGNING_PRIVATE_KEY repository secret before releasing.' >&2
+            exit 1
+          fi
+          pnpm tauri build --target '${{ matrix.target }}' --bundles '${{ matrix.bundles }}' -- --locked
+      - name: Check bundled MCP and hooks
+        run: node ../../scripts/check-native-integrations.mjs 'src-tauri/target/${{ matrix.target }}/release/${{ matrix.executable }}'
+      - name: Collect signed artifacts
+        run: node ../../scripts/desktop-release.mjs collect --input 'src-tauri/target/${{ matrix.target }}/release/bundle' --output release-assets --platform '${{ matrix.platform }}'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: desktop-${{ matrix.platform }}
+          path: apps/desktop/release-assets/*
+          if-no-files-found: error
+          retention-days: 14
+
+  draft:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: desktop-*
+          path: release-assets
+          merge-multiple: true
+      - name: Generate one complete update manifest
+        run: node scripts/desktop-release.mjs manifest --input release-assets --tag "$RELEASE_TAG" --notes docs/RELEASE_NOTES.md
+      - name: Create or refresh the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft > release-state.txt 2>/dev/null; then
+            if [ "$(cat release-state.txt)" != true ]; then
+              echo 'This release is already published. Use a new version tag.' >&2
+              exit 1
+            fi
+          else
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --title "$RELEASE_TAG" --notes-file docs/RELEASE_NOTES.md
+          fi
+          gh release upload "$RELEASE_TAG" release-assets/* --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --notes-file docs/RELEASE_NOTES.md

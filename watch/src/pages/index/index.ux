@@ -1,0 +1,2060 @@
+<template>
+  <div class="container">
+    <!-- 视图 1：主界面 -->
+    <div if="{{viewMode === 'main'}}" class="page-view">
+      <div class="header">
+        <div class="header-left">
+          <text class="eyebrow">WRIST COMMAND</text>
+          <text class="title">指令助手</text>
+          <div class="status-row">
+            <div class="status-dot {{connected ? 'dot-online' : 'dot-offline'}}"></div>
+            <text class="status-text">{{statusText}}</text>
+          </div>
+        </div>
+        <div class="btn-settings-header" onclick="goToSettings">
+          <text class="settings-btn-text">设置  ›</text>
+        </div>
+      </div>
+
+      <div if="{{hasCommands}}" class="queue-heading">
+        <text class="queue-title">待处理</text>
+        <text class="queue-count">{{commandsCount}} 项</text>
+      </div>
+
+      <!-- 多指令卡片滚动列表 -->
+      <list if="{{hasCommands}}" class="cmd-list">
+        <list-item type="cmd" class="cmd-item" for="(cIdx, item) in commandsList">
+          <div class="command-card">
+            <div class="card-top">
+              <div class="card-top-left">
+                <text class="card-badge">{{item.is_question ? '需要选择' : '需要确认'}}</text>
+                <text if="{{item.is_question || (item.actions && item.actions.length > 2 && !item.is_approval)}}" class="card-type-badge {{item.is_multiselect ? 'badge-multi' : 'badge-single'}}">{{item.is_multiselect ? '多选' : '单选'}}</text>
+              </div>
+              <text class="card-source">{{item.source || 'Codex'}}</text>
+            </div>
+            <text class="card-title">{{item.title || '新指令'}}</text>
+            <text if="{{item.content}}" class="card-content">{{item.content}}</text>
+
+            <!-- 场景 1: 提问/选择类卡片 (模式由 Codex 端的 is_multi_select 决定) -->
+            <div if="{{item.is_question || (item.actions && item.actions.length > 2 && !item.is_approval)}}" class="question-container">
+              <!-- 选项列表 (单选时为互斥高亮，多选时为多重勾选) -->
+              <div class="options-list">
+                <div
+                  for="(aIdx, action) in item.choice_actions"
+                  class="option-pill {{action.selected ? 'option-pill-selected' : 'option-pill-normal'}}"
+                  onclick="toggleOption(cIdx, aIdx)"
+                >
+                  <div class="option-check-circle {{action.selected ? 'circle-selected' : 'circle-normal'}}">
+                    <text class="circle-check-icon">{{action.selected ? '✓' : ''}}</text>
+                  </div>
+                  <text class="option-pill-text {{action.selected ? 'text-selected' : ''}}">{{action.text}}</text>
+                </div>
+              </div>
+
+              <text if="{{item.choice_actions.length === 0}}" class="question-hint">此题需要在电脑上输入回答</text>
+
+              <!-- 确认提交所选按钮 -->
+              <div if="{{item.selected_count > 0}}" class="btn-submit-selection" onclick="submitSelection(cIdx)">
+                <text if="{{item.is_multiselect}}" class="btn-submit-text">确认提交 (已选{{item.selected_count}}项)</text>
+                <text else class="btn-submit-text">确认选择: {{item.selected_text}}</text>
+              </div>
+
+              <!-- 回退到电脑输入按钮 -->
+              <div class="btn-pc-fallback" onclick="handleReply(item.id, 'pc_input')">
+                <text class="btn-pc-text">在电脑键盘输入</text>
+              </div>
+            </div>
+
+            <!-- 场景 2: 审批按键；三项操作纵排，避免在手表上挤压触控区域 -->
+            <div else class="actions-row {{item.is_approval ? 'approval-actions' : ''}}">
+              <div for="(aIdx, action) in item.actions" class="action-wrapper {{item.is_approval ? 'approval-action-wrapper' : ''}}">
+                <div
+                  class="btn-action btn-{{action.style || 'default'}}"
+                  onclick="handleReply(item.id, action.id)"
+                >
+                  <text class="btn-action-text {{action.style === 'primary' ? 'action-primary-text' : ''}}">{{action.text}}</text>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </list-item>
+      </list>
+
+      <!-- 暂无指令展示 -->
+      <div else class="empty-container">
+        <div class="empty-badge {{!watchToken ? 'empty-unpaired' : (connected ? 'empty-ready' : 'empty-disconnected')}}">
+          <text class="empty-badge-text">{{connected ? '✓' : '·'}}</text>
+        </div>
+        <text class="empty-title">{{!watchToken ? '尚未配对' : (connected ? '一切就绪' : '等待连接')}}</text>
+        <text class="empty-desc">{{connected ? '新的请求会出现在这里' : logMsg}}</text>
+        <div if="{{watchToken}}" class="sync-pill">
+          <div class="sync-dot"></div>
+          <text class="sync-tag">{{connected ? '监听中' : statusText}} · {{pollIntervalSec}} 秒同步</text>
+        </div>
+        <div if="{{!watchToken}}" class="btn-empty-settings btn-home-pair" onclick="goToPairing">
+          <text class="empty-settings-text home-pair-text">配对手表  ›</text>
+        </div>
+        <div if="{{!connected && watchToken}}" class="btn-empty-settings btn-home-discover" onclick="goToDiscovery">
+          <text class="empty-settings-text">查找电脑  ›</text>
+        </div>
+      </div>
+    </div>
+
+    <!-- 视图 2：设置中心界面 -->
+    <div if="{{viewMode === 'settings'}}" class="page-view">
+      <list class="settings-list">
+        <!-- 导航返回栏 -->
+        <list-item type="nav" class="settings-nav-item">
+          <div class="settings-nav">
+            <div class="btn-back" onclick="goToMain">
+              <text class="btn-back-text">返回</text>
+            </div>
+            <text class="nav-title">设置</text>
+            <div class="nav-placeholder"></div>
+          </div>
+        </list-item>
+
+        <!-- 卡片 1: 屏幕常亮 -->
+        <list-item type="awake" class="setting-card-item">
+          <div class="setting-card">
+            <div class="setting-row">
+              <div class="setting-label-col">
+                <text class="setting-label">屏幕常亮</text>
+                <text class="setting-sub">应用打开时保持亮屏</text>
+              </div>
+              <div class="setting-toggle {{keepScreenOn ? 'toggle-on' : 'toggle-off'}}" onclick="toggleKeepAwake">
+                <text class="toggle-text {{keepScreenOn ? 'toggle-text-on' : ''}}">{{keepScreenOn ? '已开启' : '已关闭'}}</text>
+              </div>
+            </div>
+          </div>
+        </list-item>
+
+        <!-- 卡片 2: 轮询频率 (轮巡时间) -->
+        <list-item type="interval" class="setting-card-item">
+          <div class="setting-card">
+            <text class="setting-label">同步间隔</text>
+            <text class="setting-sub">当前 {{pollIntervalSec}} 秒 · 时间越长越省电</text>
+            <div class="interval-options">
+              <div class="interval-pill {{pollIntervalSec === 1 ? 'pill-active' : 'pill-inactive'}}" onclick="setPollInterval(1)">
+                <text class="pill-text {{pollIntervalSec === 1 ? 'pill-text-active' : ''}}">1秒</text>
+              </div>
+              <div class="interval-pill {{pollIntervalSec === 2 ? 'pill-active' : 'pill-inactive'}}" onclick="setPollInterval(2)">
+                <text class="pill-text {{pollIntervalSec === 2 ? 'pill-text-active' : ''}}">2秒</text>
+              </div>
+              <div class="interval-pill {{pollIntervalSec === 3 ? 'pill-active' : 'pill-inactive'}}" onclick="setPollInterval(3)">
+                <text class="pill-text {{pollIntervalSec === 3 ? 'pill-text-active' : ''}}">3秒</text>
+              </div>
+              <div class="interval-pill {{pollIntervalSec === 5 ? 'pill-active' : 'pill-inactive'}}" onclick="setPollInterval(5)">
+                <text class="pill-text {{pollIntervalSec === 5 ? 'pill-text-active' : ''}}">5秒</text>
+              </div>
+            </div>
+          </div>
+        </list-item>
+
+        <!-- 卡片 3: 自定义服务器地址入口 -->
+        <list-item type="server" class="setting-card-item">
+          <div class="setting-card" onclick="goToServerEdit">
+            <div class="server-card-top">
+              <text class="setting-label">电脑地址</text>
+              <text class="server-edit-badge">修改  ›</text>
+            </div>
+            <text class="server-current-url">{{currentServerUrl}}</text>
+            <text class="setting-sub">与电脑在同一局域网时使用</text>
+          </div>
+        </list-item>
+
+        <list-item type="discover" class="setting-card-item">
+          <div class="setting-card" onclick="goToDiscovery">
+            <text class="setting-label">查找电脑  ›</text>
+            <text class="setting-sub">地址变化时搜索可连接的服务</text>
+          </div>
+        </list-item>
+
+        <list-item type="restore" class="setting-card-item">
+          <div class="setting-card" onclick="restoreDefaultServer">
+            <text class="setting-label">恢复安装包地址  ›</text>
+            <text class="setting-sub">{{defaultServerUrl}}</text>
+          </div>
+        </list-item>
+
+        <list-item type="pairing" class="setting-card-item">
+          <div class="setting-card" onclick="goToPairing">
+            <text class="setting-label">手表配对</text>
+            <text class="setting-sub">{{pairingStatus}} · 输入电脑显示的六位码</text>
+          </div>
+        </list-item>
+
+        <!-- 卡片 4: 快速工具 -->
+        <list-item type="tools" class="setting-card-item">
+          <div class="setting-card">
+            <text class="setting-label">硬件与连接测试</text>
+            <div class="tools-row">
+              <div class="btn-tool" onclick="testVibrate">
+                <text class="btn-tool-text">测试振动</text>
+              </div>
+              <div class="btn-tool" onclick="manualRefresh">
+                <text class="btn-tool-text">立即同步</text>
+              </div>
+            </div>
+          </div>
+        </list-item>
+
+        <!-- 卡片 5: 系统信息 -->
+        <list-item type="info" class="setting-card-item">
+          <div class="setting-card info-card">
+            <div class="info-row">
+              <text class="info-key">当前版本</text>
+              <text class="info-val info-val-highlight">v1.1.6</text>
+            </div>
+            <div class="info-row">
+              <text class="info-key">唤醒通道</text>
+              <text class="info-val">前台轮询 · ntfy 提醒</text>
+            </div>
+          </div>
+        </list-item>
+
+        <!-- 底部完成返回按钮 -->
+        <list-item type="done" class="setting-foot-item">
+          <div class="btn-done" onclick="goToMain">
+            <text class="btn-done-text">返回首页</text>
+          </div>
+        </list-item>
+      </list>
+    </div>
+
+    <!-- 视图 3：服务器地址独立键盘编辑器 -->
+    <div if="{{viewMode === 'server_edit'}}" class="page-view">
+      <list class="settings-list">
+        <!-- 导航返回栏 -->
+        <list-item type="nav" class="settings-nav-item">
+          <div class="settings-nav">
+            <div class="btn-back" onclick="goBackFromServerEdit">
+              <text class="btn-back-text">返回设置</text>
+            </div>
+            <text class="nav-title">修改服务器</text>
+            <div class="nav-placeholder"></div>
+          </div>
+        </list-item>
+
+        <!-- 地址实时输入框 -->
+        <list-item type="editor" class="setting-card-item">
+          <div class="editor-box">
+            <text class="editor-prefix">http://</text>
+            <text class="editor-value">{{inputServerHost || '点击下方键盘输入'}}</text>
+          </div>
+        </list-item>
+
+        <!-- 快捷操作胶囊 (192.168. / :8000 / 清空) -->
+        <list-item type="presets" class="setting-card-item">
+          <div class="presets-row">
+            <div class="btn-preset" onclick="insertPreset('192.168.')">
+              <text class="preset-text">192.168.</text>
+            </div>
+            <div class="btn-preset" onclick="insertPreset(':8000')">
+              <text class="preset-text">:8000</text>
+            </div>
+            <div class="btn-preset btn-clear" onclick="clearInputHost">
+              <text class="preset-text clear-text">清空</text>
+            </div>
+          </div>
+        </list-item>
+
+        <!-- 3x4 独立数字拨号键盘 (高对比度、大按键防误触) -->
+        <list-item type="keypad" class="setting-card-item">
+          <div class="keypad-container">
+            <div class="keypad-row">
+              <div class="key-btn" onclick="pressKey('1')"><text class="key-text">1</text></div>
+              <div class="key-btn" onclick="pressKey('2')"><text class="key-text">2</text></div>
+              <div class="key-btn" onclick="pressKey('3')"><text class="key-text">3</text></div>
+            </div>
+            <div class="keypad-row">
+              <div class="key-btn" onclick="pressKey('4')"><text class="key-text">4</text></div>
+              <div class="key-btn" onclick="pressKey('5')"><text class="key-text">5</text></div>
+              <div class="key-btn" onclick="pressKey('6')"><text class="key-text">6</text></div>
+            </div>
+            <div class="keypad-row">
+              <div class="key-btn" onclick="pressKey('7')"><text class="key-text">7</text></div>
+              <div class="key-btn" onclick="pressKey('8')"><text class="key-text">8</text></div>
+              <div class="key-btn" onclick="pressKey('9')"><text class="key-text">9</text></div>
+            </div>
+            <div class="keypad-row">
+              <div class="key-btn" onclick="pressKey('.')"><text class="key-text">.</text></div>
+              <div class="key-btn" onclick="pressKey('0')"><text class="key-text">0</text></div>
+              <div class="key-btn key-btn-del" onclick="deleteLastChar()"><text class="key-text-del">删除</text></div>
+            </div>
+          </div>
+        </list-item>
+
+        <!-- 测试与保存动作栏 -->
+        <list-item type="actions" class="setting-foot-item">
+          <div class="editor-actions-row">
+            <div class="btn-test-conn" onclick="testCustomConnection">
+              <text class="test-conn-text">探测连通性</text>
+            </div>
+            <div class="btn-save-conn" onclick="saveCustomServer">
+              <text class="save-conn-text">保存并生效</text>
+            </div>
+          </div>
+        </list-item>
+      </list>
+    </div>
+
+    <div if="{{viewMode === 'pairing'}}" class="pairing-page">
+      <div class="pair-header">
+        <div class="pair-back" onclick="goBackFromPairing"><text class="pair-back-text">‹  返回</text></div>
+        <text class="pair-title">手表配对</text>
+        <div class="pair-header-spacer"></div>
+      </div>
+      <div class="pair-server-row" onclick="goToDiscovery">
+        <text class="pair-server-label">电脑地址</text>
+        <text class="pair-server-value">{{currentServerUrl}}</text>
+        <text class="pair-server-arrow">查找 ›</text>
+      </div>
+      <div class="pair-code-row">
+        <div for="(slotIndex, digit) in pairingSlots" class="pair-code-slot {{digit === '·' ? 'pair-code-empty' : 'pair-code-filled'}}">
+          <text class="pair-code-text">{{digit}}</text>
+        </div>
+      </div>
+      <text class="pair-hint">{{pairingHint}}</text>
+      <div class="pair-keypad">
+        <div class="pair-key-row">
+          <div class="pair-key" onclick="pressPairDigit('1')"><text class="pair-key-number">1</text></div>
+          <div class="pair-key" onclick="pressPairDigit('2')"><text class="pair-key-number">2</text></div>
+          <div class="pair-key" onclick="pressPairDigit('3')"><text class="pair-key-number">3</text></div>
+        </div>
+        <div class="pair-key-row">
+          <div class="pair-key" onclick="pressPairDigit('4')"><text class="pair-key-number">4</text></div>
+          <div class="pair-key" onclick="pressPairDigit('5')"><text class="pair-key-number">5</text></div>
+          <div class="pair-key" onclick="pressPairDigit('6')"><text class="pair-key-number">6</text></div>
+        </div>
+        <div class="pair-key-row">
+          <div class="pair-key" onclick="pressPairDigit('7')"><text class="pair-key-number">7</text></div>
+          <div class="pair-key" onclick="pressPairDigit('8')"><text class="pair-key-number">8</text></div>
+          <div class="pair-key" onclick="pressPairDigit('9')"><text class="pair-key-number">9</text></div>
+        </div>
+        <div class="pair-key-row pair-key-row-last">
+          <div class="pair-key pair-key-utility" onclick="deletePairDigit"><text class="pair-key-label">删除</text></div>
+          <div class="pair-key" onclick="pressPairDigit('0')"><text class="pair-key-number">0</text></div>
+          <div class="pair-key pair-key-utility" onclick="clearPairingCode"><text class="pair-key-label">清空</text></div>
+        </div>
+      </div>
+      <div class="pair-submit {{pairingCode.length === 6 ? 'pair-submit-ready' : 'pair-submit-idle'}}" onclick="submitPairing">
+        <text class="pair-submit-text {{pairingCode.length === 6 ? 'pair-submit-text-ready' : ''}}">{{pairingBusy ? '正在配对…' : '确认配对'}}</text>
+      </div>
+    </div>
+
+    <div if="{{viewMode === 'discovery'}}" class="discovery-page">
+      <div class="pair-header">
+        <div class="pair-back" onclick="goBackFromDiscovery"><text class="pair-back-text">‹  返回</text></div>
+        <text class="pair-title">查找电脑</text>
+        <div class="pair-header-spacer"></div>
+      </div>
+      <text class="discovery-intro">寻找运行指令助手的电脑</text>
+      <text class="discovery-status">{{discoveryStatus}}</text>
+      <div for="(serverIndex, server) in discoveredServers" class="discovery-result" onclick="selectDiscoveredServer(server.url)">
+        <text class="discovery-result-name">{{server.name}}</text>
+        <text class="discovery-result-url">{{server.url}}</text>
+        <text class="discovery-result-action">使用此电脑  ›</text>
+      </div>
+      <div class="discovery-spacer"></div>
+      <div class="discovery-refresh" onclick="startDiscovery">
+        <text class="discovery-refresh-text">{{discoveryBusy ? '正在搜索…' : '重新搜索'}}</text>
+      </div>
+      <div class="discovery-manual" onclick="goToServerEdit">
+        <text class="discovery-manual-text">手动输入电脑地址</text>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style>
+  .container {
+    width: 432px;
+    height: 514px;
+    flex-direction: column;
+    background-color: #000000;
+  }
+  .page-view {
+    width: 100%;
+    height: 100%;
+    flex-direction: column;
+    padding: 26px 28px 12px 28px;
+  }
+
+  /* 顶部状态栏 - 宽安全边距避开曲面圆角 */
+  .header {
+    width: 100%;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 12px;
+    margin-bottom: 8px;
+  }
+  .header-left {
+    flex-direction: column;
+    padding-left: 4px;
+  }
+  .title {
+    color: #ffffff;
+    font-size: 26px;
+    font-weight: bold;
+    letter-spacing: 1px;
+  }
+  .status-row {
+    flex-direction: row;
+    align-items: center;
+    margin-top: 5px;
+  }
+  .status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 5px;
+    margin-right: 6px;
+  }
+  .dot-online {
+    background-color: #00e676;
+  }
+  .dot-offline {
+    background-color: #ff5252;
+  }
+  .status-text {
+    color: #888888;
+    font-size: 17px;
+  }
+  .badge-count {
+    color: #2979ff;
+    font-size: 17px;
+    margin-left: 6px;
+    font-weight: bold;
+  }
+
+  /* 大触控区设置胶囊按钮 (宽 84px，高 48px) */
+  .btn-settings-header {
+    height: 48px;
+    padding: 0 22px;
+    background-color: #1e1e28;
+    border-radius: 24px;
+    border: 1px solid #3c3c52;
+    justify-content: center;
+    align-items: center;
+  }
+  .settings-btn-text {
+    color: #00e676;
+    font-size: 20px;
+    font-weight: bold;
+  }
+
+  /* 指令卡片列表 */
+  .cmd-list {
+    width: 100%;
+    flex: 1;
+    flex-direction: column;
+  }
+  .cmd-item {
+    width: 100%;
+    margin-bottom: 12px;
+  }
+  .command-card {
+    width: 100%;
+    background-color: #141418;
+    border-radius: 18px;
+    padding: 14px 14px;
+    flex-direction: column;
+    border: 1px solid #2979ff;
+  }
+  .card-top {
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+  }
+  .card-top-left {
+    flex-direction: row;
+    align-items: center;
+  }
+  .card-badge {
+    color: #2979ff;
+    font-size: 18px;
+    font-weight: bold;
+  }
+  .card-type-badge {
+    color: #ffffff;
+    font-size: 14px;
+    font-weight: bold;
+    border-radius: 6px;
+    padding: 2px 6px;
+    margin-left: 6px;
+  }
+  .badge-single {
+    background-color: #2979ff;
+  }
+  .badge-multi {
+    background-color: #7c4dff;
+  }
+  .card-source {
+    color: #00e676;
+    background-color: #1a2e22;
+    font-size: 16px;
+    font-weight: bold;
+    border-radius: 6px;
+    padding: 2px 8px;
+  }
+  .card-title {
+    color: #ffffff;
+    font-size: 24px;
+    font-weight: bold;
+    margin-bottom: 6px;
+  }
+  .card-content {
+    color: #cccccc;
+    font-size: 20px;
+    line-height: 28px;
+    margin-bottom: 12px;
+  }
+
+  /* 场景 1: 提问选择项容器与胶囊 */
+  .question-container {
+    width: 100%;
+    flex-direction: column;
+    margin-bottom: 6px;
+  }
+  .options-list {
+    width: 100%;
+    flex-direction: column;
+  }
+  .question-hint {
+    color: #aaaaaa;
+    font-size: 17px;
+    margin-bottom: 8px;
+  }
+  .option-pill {
+    width: 100%;
+    height: 52px;
+    border-radius: 26px;
+    flex-direction: row;
+    align-items: center;
+    padding: 0 14px;
+    margin-bottom: 8px;
+  }
+  .option-pill-normal {
+    background-color: #1a1a24;
+    border: 1px solid #323246;
+  }
+  .option-pill-selected {
+    background-color: #0a301c;
+    border: 2px solid #00e676;
+  }
+  .option-check-circle {
+    width: 26px;
+    height: 26px;
+    border-radius: 13px;
+    justify-content: center;
+    align-items: center;
+    margin-right: 10px;
+  }
+  .circle-normal {
+    border: 2px solid #555568;
+  }
+  .circle-selected {
+    background-color: #00e676;
+    border: 2px solid #00e676;
+  }
+  .circle-check-icon {
+    color: #000000;
+    font-size: 16px;
+    font-weight: bold;
+  }
+  .option-pill-text {
+    color: #cccccc;
+    font-size: 19px;
+    font-weight: bold;
+    flex: 1;
+  }
+  .text-selected {
+    color: #ffffff;
+  }
+  .btn-submit-selection {
+    width: 100%;
+    height: 52px;
+    border-radius: 26px;
+    background-color: #00c853;
+    justify-content: center;
+    align-items: center;
+    margin-top: 4px;
+    margin-bottom: 8px;
+  }
+  .btn-submit-text {
+    color: #ffffff;
+    font-size: 19px;
+    font-weight: bold;
+  }
+  .btn-pc-fallback {
+    width: 100%;
+    height: 44px;
+    border-radius: 22px;
+    background-color: #241818;
+    border: 1px solid #4a2424;
+    justify-content: center;
+    align-items: center;
+    margin-bottom: 4px;
+  }
+  .btn-pc-text {
+    color: #ff8a80;
+    font-size: 16px;
+  }
+
+  /* 场景 2: 常规二元操作按钮组 */
+  .actions-row {
+    width: 100%;
+    flex-direction: row;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+  .action-wrapper {
+    flex: 1;
+    margin: 0 4px;
+  }
+  .approval-actions {
+    flex-direction: column;
+  }
+  .approval-action-wrapper {
+    width: 100%;
+    flex: 0;
+    margin: 0 0 8px;
+  }
+  .btn-action {
+    width: 100%;
+    height: 54px;
+    border-radius: 27px;
+    justify-content: center;
+    align-items: center;
+  }
+  .btn-action-text {
+    color: #ffffff;
+    font-size: 20px;
+    font-weight: bold;
+  }
+  .btn-primary {
+    background-color: #00c853;
+  }
+  .btn-danger {
+    background-color: #d50000;
+  }
+  .btn-default {
+    background-color: #37474f;
+  }
+
+  /* 暂无指令展示 */
+  .empty-container {
+    width: 100%;
+    flex: 1;
+    justify-content: center;
+    align-items: center;
+    flex-direction: column;
+  }
+  .empty-badge {
+    width: 58px;
+    height: 58px;
+    border-radius: 29px;
+    background-color: #0e2015;
+    border: 2px solid #00e676;
+    justify-content: center;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  .empty-badge-text {
+    color: #00e676;
+    font-size: 32px;
+    font-weight: bold;
+  }
+  .empty-title {
+    color: #ffffff;
+    font-size: 24px;
+    font-weight: bold;
+  }
+  .empty-desc {
+    color: #666666;
+    font-size: 17px;
+    margin-top: 4px;
+    text-align: center;
+  }
+  .sync-pill {
+    margin-top: 10px;
+    background-color: #121218;
+    padding: 6px 14px;
+    border-radius: 14px;
+    border: 1px solid #1f1f2a;
+  }
+  .sync-tag {
+    color: #00e676;
+    font-size: 15px;
+  }
+  .btn-empty-settings {
+    width: 200px;
+    height: 46px;
+    margin-top: 16px;
+    background-color: #191924;
+    border: 1px solid #2e2e42;
+    border-radius: 23px;
+    justify-content: center;
+    align-items: center;
+  }
+  .empty-settings-text {
+    color: #82b1ff;
+    font-size: 18px;
+    font-weight: bold;
+  }
+
+  /* 设置列表 */
+  .settings-list {
+    width: 100%;
+    flex: 1;
+    flex-direction: column;
+  }
+  .settings-nav-item {
+    width: 100%;
+    margin-bottom: 12px;
+  }
+  .settings-nav {
+    width: 100%;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 10px;
+  }
+  .btn-back {
+    height: 46px;
+    padding: 0 16px;
+    background-color: #1e1e28;
+    border: 1px solid #3c3c52;
+    border-radius: 23px;
+    justify-content: center;
+    align-items: center;
+  }
+  .btn-back-text {
+    color: #ffffff;
+    font-size: 19px;
+    font-weight: bold;
+  }
+  .nav-title {
+    color: #ffffff;
+    font-size: 24px;
+    font-weight: bold;
+  }
+  .nav-placeholder {
+    width: 50px;
+  }
+
+  /* 设置项卡片 */
+  .setting-card-item {
+    width: 100%;
+    margin-bottom: 10px;
+  }
+  .setting-card {
+    width: 100%;
+    background-color: #131318;
+    border-radius: 18px;
+    padding: 14px 16px;
+    flex-direction: column;
+    border: 1px solid #22222d;
+  }
+  .setting-row {
+    width: 100%;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .setting-label-col {
+    flex-direction: column;
+    flex: 1;
+  }
+  .setting-label {
+    color: #ffffff;
+    font-size: 20px;
+    font-weight: bold;
+  }
+  .setting-sub {
+    color: #777777;
+    font-size: 15px;
+    margin-top: 3px;
+  }
+  .setting-toggle {
+    height: 44px;
+    padding: 0 18px;
+    border-radius: 22px;
+    justify-content: center;
+    align-items: center;
+  }
+  .toggle-on {
+    background-color: #00c853;
+  }
+  .toggle-off {
+    background-color: #2c2c36;
+  }
+  .toggle-text {
+    color: #ffffff;
+    font-size: 17px;
+    font-weight: bold;
+  }
+
+  /* 轮询选项 Pills */
+  .interval-options {
+    width: 100%;
+    flex-direction: row;
+    justify-content: space-between;
+    margin-top: 10px;
+  }
+  .interval-pill {
+    flex: 1;
+    height: 46px;
+    margin: 0 4px;
+    border-radius: 23px;
+    justify-content: center;
+    align-items: center;
+  }
+  .pill-active {
+    background-color: #2979ff;
+    border: 1px solid #82b1ff;
+  }
+  .pill-inactive {
+    background-color: #202028;
+    border: 1px solid #2c2c38;
+  }
+  .pill-text {
+    color: #888888;
+    font-size: 17px;
+  }
+  .pill-text-active {
+    color: #ffffff;
+    font-weight: bold;
+  }
+
+  /* 服务器卡片专属样式 */
+  .server-card-top {
+    width: 100%;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .server-edit-badge {
+    color: #2979ff;
+    font-size: 17px;
+    font-weight: bold;
+  }
+  .server-current-url {
+    color: #00e676;
+    font-size: 18px;
+    font-weight: bold;
+    margin-top: 6px;
+    margin-bottom: 2px;
+  }
+
+  /* 工具按钮 */
+  .tools-row {
+    width: 100%;
+    flex-direction: row;
+    justify-content: space-between;
+    margin-top: 10px;
+  }
+  .btn-tool {
+    flex: 1;
+    height: 48px;
+    margin: 0 4px;
+    background-color: #1e1e28;
+    border: 1px solid #313142;
+    border-radius: 24px;
+    justify-content: center;
+    align-items: center;
+  }
+  .btn-tool-text {
+    color: #ffffff;
+    font-size: 18px;
+  }
+
+  /* 信息卡片 */
+  .info-card {
+    background-color: #0d0d12;
+    border: 1px solid #1c1c24;
+  }
+  .info-row {
+    width: 100%;
+    flex-direction: row;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+  .info-key {
+    color: #666666;
+    font-size: 16px;
+  }
+  .info-val {
+    color: #aaaaaa;
+    font-size: 16px;
+  }
+  .info-val-highlight {
+    color: #00e676;
+    font-weight: bold;
+  }
+
+  /* 完成按钮 */
+  .setting-foot-item {
+    width: 100%;
+    margin-top: 6px;
+    margin-bottom: 20px;
+  }
+  .btn-done {
+    width: 100%;
+    height: 52px;
+    border-radius: 26px;
+    background-color: #00c853;
+    justify-content: center;
+    align-items: center;
+  }
+  .btn-done-text {
+    color: #ffffff;
+    font-size: 20px;
+    font-weight: bold;
+  }
+
+  /* --- 服务器独立键盘编辑器样式 --- */
+  .editor-box {
+    width: 100%;
+    background-color: #101016;
+    border: 2px solid #2979ff;
+    border-radius: 14px;
+    padding: 10px 14px;
+    flex-direction: row;
+    align-items: center;
+  }
+  .editor-prefix {
+    color: #82b1ff;
+    font-size: 18px;
+    font-weight: bold;
+    margin-right: 4px;
+  }
+  .editor-value {
+    color: #ffffff;
+    font-size: 20px;
+    font-weight: bold;
+    flex: 1;
+  }
+  .presets-row {
+    width: 100%;
+    flex-direction: row;
+    justify-content: space-between;
+    margin-top: 4px;
+  }
+  .btn-preset {
+    height: 40px;
+    padding: 0 14px;
+    border-radius: 20px;
+    background-color: #1a1a24;
+    border: 1px solid #323244;
+    justify-content: center;
+    align-items: center;
+  }
+  .btn-clear {
+    background-color: #2a1414;
+    border: 1px solid #552222;
+  }
+  .preset-text {
+    color: #82b1ff;
+    font-size: 16px;
+  }
+  .clear-text {
+    color: #ff5252;
+    font-weight: bold;
+  }
+
+  /* 独立 3x4 键盘容器 */
+  .keypad-container {
+    width: 100%;
+    flex-direction: column;
+    margin-top: 4px;
+  }
+  .keypad-row {
+    width: 100%;
+    flex-direction: row;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+  .key-btn {
+    flex: 1;
+    height: 48px;
+    margin: 0 4px;
+    border-radius: 24px;
+    background-color: #1c1c26;
+    border: 1px solid #333345;
+    justify-content: center;
+    align-items: center;
+  }
+  .key-btn-del {
+    background-color: #2b1d24;
+    border: 1px solid #542d3c;
+  }
+  .key-text {
+    color: #ffffff;
+    font-size: 24px;
+    font-weight: bold;
+  }
+  .key-text-del {
+    color: #ff5252;
+    font-size: 22px;
+    font-weight: bold;
+  }
+
+  /* 编辑器底部操作栏 */
+  .editor-actions-row {
+    width: 100%;
+    flex-direction: row;
+    justify-content: space-between;
+    margin-top: 6px;
+    margin-bottom: 16px;
+  }
+  .btn-test-conn {
+    flex: 1;
+    height: 50px;
+    margin-right: 6px;
+    background-color: #1e2436;
+    border: 1px solid #3b4e7a;
+    border-radius: 25px;
+    justify-content: center;
+    align-items: center;
+  }
+  .test-conn-text {
+    color: #82b1ff;
+    font-size: 18px;
+    font-weight: bold;
+  }
+  .btn-save-conn {
+    flex: 1;
+    height: 50px;
+    margin-left: 6px;
+    background-color: #00c853;
+    border-radius: 25px;
+    justify-content: center;
+    align-items: center;
+  }
+  .save-conn-text {
+    color: #ffffff;
+    font-size: 18px;
+    font-weight: bold;
+  }
+
+  /* 1.1 visual system: quiet instrument panel, one signal color. */
+  .container { background-color: #080c0b; }
+  .page-view { padding: 32px 28px 18px 28px; background-color: #080c0b; }
+  .header {
+    padding-bottom: 20px;
+    margin-bottom: 8px;
+    background-color: #080c0b;
+  }
+  .header-left { padding-left: 0; }
+  .eyebrow {
+    color: #c8fa4b;
+    font-size: 13px;
+    font-weight: bold;
+    letter-spacing: 3px;
+    margin-bottom: 4px;
+  }
+  .title { color: #f2f5ef; font-size: 32px; letter-spacing: 0px; }
+  .status-row { margin-top: 8px; }
+  .status-dot { width: 9px; height: 9px; border-radius: 5px; margin-right: 8px; }
+  .dot-online { background-color: #c8fa4b; }
+  .dot-offline { background-color: #f5b764; }
+  .status-text { color: #a8b3a9; font-size: 17px; }
+  .btn-settings-header {
+    height: 52px;
+    padding: 0 18px;
+    background-color: #1a211e;
+    border: 1px solid #3a453e;
+    border-radius: 26px;
+  }
+  .settings-btn-text { color: #f2f5ef; font-size: 19px; }
+  .queue-heading {
+    width: 100%;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 10px;
+    margin-bottom: 12px;
+  }
+  .queue-title { color: #f2f5ef; font-size: 22px; font-weight: bold; }
+  .queue-count { color: #a8b3a9; font-size: 17px; }
+  .cmd-item { margin-bottom: 10px; }
+  .command-card {
+    background-color: #171d19;
+    border: 1px solid #354138;
+    border-radius: 22px;
+    padding: 18px;
+  }
+  .card-top { margin-bottom: 14px; }
+  .card-badge { color: #c8fa4b; font-size: 16px; }
+  .card-type-badge { background-color: #26352a; color: #d9f4c8; font-size: 14px; }
+  .badge-multi, .badge-single { background-color: #26352a; }
+  .card-source { background-color: #242d27; color: #a8b3a9; font-size: 15px; }
+  .card-title { color: #f2f5ef; font-size: 26px; margin-bottom: 8px; }
+  .card-content { color: #bdc6bc; font-size: 19px; line-height: 27px; margin-bottom: 18px; }
+  .option-pill { height: 58px; border-radius: 18px; margin-bottom: 9px; }
+  .option-pill-normal { background-color: #252d27; border: 1px solid #424e44; }
+  .option-pill-selected { background-color: #293c20; border: 2px solid #c8fa4b; }
+  .circle-normal { border: 2px solid #849087; }
+  .circle-selected { background-color: #c8fa4b; border: 2px solid #c8fa4b; }
+  .circle-check-icon { color: #080c0b; }
+  .option-pill-text { color: #f2f5ef; font-size: 20px; }
+  .btn-submit-selection { height: 58px; background-color: #c8fa4b; border-radius: 20px; margin-top: 6px; }
+  .btn-submit-text { color: #11170c; font-size: 20px; }
+  .btn-pc-fallback { height: 50px; background-color: #252d27; border: 1px solid #424e44; border-radius: 18px; }
+  .btn-pc-text { color: #bdc6bc; font-size: 18px; }
+  .btn-action { height: 62px; border-radius: 20px; }
+  .btn-action-text { color: #f2f5ef; font-size: 21px; }
+  .btn-primary { background-color: #c8fa4b; }
+  .action-primary-text { color: #11170c; }
+  .btn-danger { background-color: #402523; }
+  .btn-default { background-color: #344036; }
+
+  .empty-container { justify-content: center; padding-bottom: 26px; }
+  .empty-badge {
+    width: 124px;
+    height: 124px;
+    border-radius: 62px;
+    background-color: #172019;
+    border: 3px solid #c8fa4b;
+    margin-bottom: 28px;
+  }
+  .empty-disconnected { border: 3px solid #6e796d; }
+  .empty-unpaired { width: 88px; height: 88px; border-radius: 44px; margin-bottom: 18px; border: 3px solid #6e796d; }
+  .empty-unpaired .empty-badge-text { font-size: 52px; color: #a8b3a9; }
+  .empty-badge-text { color: #c8fa4b; font-size: 66px; font-weight: bold; }
+  .empty-disconnected .empty-badge-text { color: #a8b3a9; }
+  .empty-title { color: #f2f5ef; font-size: 31px; }
+  .empty-desc { color: #a8b3a9; font-size: 18px; margin-top: 10px; }
+  .sync-pill {
+    flex-direction: row;
+    align-items: center;
+    margin-top: 25px;
+    padding: 9px 16px;
+    background-color: #1b231d;
+    border: 1px solid #39473b;
+    border-radius: 20px;
+  }
+  .sync-dot { width: 7px; height: 7px; border-radius: 4px; background-color: #c8fa4b; margin-right: 8px; }
+  .sync-tag { color: #bdc6bc; font-size: 16px; }
+  .btn-empty-settings { width: 224px; height: 54px; background-color: #28352b; border: 1px solid #546b50; border-radius: 20px; margin-top: 24px; }
+  .empty-settings-text { color: #f2f5ef; font-size: 19px; }
+  .btn-home-pair { background-color: #c8fa4b; border: 1px solid #c8fa4b; }
+  .home-pair-text { color: #11170c; }
+
+  .settings-nav { padding-bottom: 15px; }
+  .btn-back { background-color: #1a211e; border: 1px solid #3a453e; }
+  .btn-back-text, .nav-title { color: #f2f5ef; }
+  .setting-card { background-color: #171d19; border: 1px solid #303d33; border-radius: 20px; padding: 16px; }
+  .setting-label { color: #f2f5ef; font-size: 20px; }
+  .setting-sub { color: #a8b3a9; font-size: 16px; margin-top: 6px; }
+  .toggle-on, .pill-active, .btn-done, .btn-save-conn { background-color: #c8fa4b; }
+  .toggle-text-on, .pill-text-active, .btn-done-text, .save-conn-text { color: #11170c; }
+  .toggle-off, .pill-inactive, .btn-tool, .btn-preset, .key-btn { background-color: #252d27; border: 1px solid #424e44; }
+  .pill-active { border: 1px solid #c8fa4b; }
+  .pill-text { color: #a8b3a9; }
+  .server-edit-badge, .server-current-url, .info-val-highlight { color: #c8fa4b; }
+  .server-current-url { font-size: 19px; }
+  .info-card { background-color: #111713; }
+  .info-key { color: #8c9a8f; }
+  .info-val { color: #c5cec3; }
+  .editor-box { background-color: #171d19; border: 2px solid #c8fa4b; }
+  .editor-prefix, .preset-text, .test-conn-text { color: #c8fa4b; }
+  .editor-value { color: #f2f5ef; }
+  .btn-test-conn { background-color: #252d27; border: 1px solid #536651; }
+  .key-text { color: #f2f5ef; }
+
+  /* Pairing uses a fixed panel so the list cannot steal short taps. */
+  .pairing-page {
+    width: 100%;
+    height: 100%;
+    padding: 14px 24px 10px 24px;
+    background-color: #080c0b;
+    flex-direction: column;
+  }
+  .pair-header {
+    width: 100%;
+    height: 44px;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+  }
+  .pair-back {
+    width: 104px;
+    height: 42px;
+    border-radius: 18px;
+    background-color: #1a211e;
+    justify-content: center;
+    align-items: center;
+  }
+  .pair-back-text { color: #f2f5ef; font-size: 20px; font-weight: bold; }
+  .pair-title { color: #f2f5ef; font-size: 25px; font-weight: bold; }
+  .pair-header-spacer { width: 104px; }
+  .pair-server-row { width: 100%; height: 40px; margin-bottom: 6px; padding: 0 10px; border-radius: 12px; background-color: #1a211e; flex-direction: row; align-items: center; }
+  .pair-server-label { color: #a8b3a9; font-size: 15px; margin-right: 8px; }
+  .pair-server-value { color: #f2f5ef; font-size: 14px; flex: 1; }
+  .pair-server-arrow { color: #c8fa4b; font-size: 15px; }
+  .pair-code-row {
+    width: 100%;
+    height: 48px;
+    flex-direction: row;
+    align-items: center;
+    margin-bottom: 4px;
+  }
+  .pair-code-slot {
+    flex: 1;
+    height: 48px;
+    margin: 0 3px;
+    border-radius: 13px;
+    background-color: #1a211e;
+    justify-content: center;
+    align-items: center;
+  }
+  .pair-code-filled { background-color: #293c20; }
+  .pair-code-text { color: #f2f5ef; font-size: 27px; font-weight: bold; }
+  .pair-code-empty .pair-code-text { color: #79877b; }
+  .pair-hint {
+    color: #a8b3a9;
+    font-size: 16px;
+    height: 17px;
+    margin-bottom: 6px;
+    text-align: center;
+  }
+  .pair-keypad { width: 100%; flex-direction: column; }
+  .pair-key-row {
+    width: 100%;
+    height: 52px;
+    flex-direction: row;
+    margin-bottom: 4px;
+  }
+  .pair-key-row-last { margin-bottom: 0; }
+  .pair-key {
+    flex: 1;
+    height: 52px;
+    margin: 0 4px;
+    border-radius: 20px;
+    background-color: #26312b;
+    justify-content: center;
+    align-items: center;
+  }
+  .pair-key-number { color: #f2f5ef; font-size: 29px; font-weight: bold; }
+  .pair-key-utility { background-color: #1a211e; }
+  .pair-key-label { color: #bdc6bc; font-size: 21px; font-weight: bold; }
+  .pair-submit {
+    width: 100%;
+    height: 54px;
+    margin-top: 6px;
+    border-radius: 20px;
+    justify-content: center;
+    align-items: center;
+  }
+  .pair-submit-idle { background-color: #344036; }
+  .pair-submit-ready { background-color: #c8fa4b; }
+  .pair-submit-text { color: #a8b3a9; font-size: 21px; font-weight: bold; }
+  .pair-submit-text-ready { color: #11170c; }
+  .discovery-page { width: 100%; height: 100%; padding: 22px 28px; background-color: #080c0b; flex-direction: column; }
+  .discovery-intro { color: #f2f5ef; font-size: 24px; margin-top: 14px; }
+  .discovery-status { color: #a8b3a9; font-size: 17px; margin-top: 10px; margin-bottom: 18px; }
+  .discovery-result { width: 100%; padding: 16px; margin-bottom: 10px; border: 2px solid #c8fa4b; border-radius: 18px; background-color: #223123; flex-direction: column; }
+  .discovery-result-name { color: #f2f5ef; font-size: 21px; font-weight: bold; }
+  .discovery-result-url { color: #b7c9b5; font-size: 16px; margin-top: 5px; }
+  .discovery-result-action { color: #c8fa4b; font-size: 17px; margin-top: 10px; }
+  .discovery-spacer { flex: 1; }
+  .discovery-refresh, .discovery-manual { width: 100%; height: 54px; border-radius: 18px; justify-content: center; align-items: center; margin-top: 10px; }
+  .discovery-refresh { background-color: #c8fa4b; }
+  .discovery-refresh-text { color: #11170c; font-size: 20px; font-weight: bold; }
+  .discovery-manual { background-color: #252d27; border: 1px solid #424e44; }
+  .discovery-manual-text { color: #f2f5ef; font-size: 19px; }
+</style>
+
+<script>
+  import fetch from '@system.fetch';
+  import prompt from '@system.prompt';
+  import vibrator from '@system.vibrator';
+  import brightness from '@system.brightness';
+  import device from '@system.device';
+  import storage from '@system.storage';
+  import { SERVER_URL, DISCOVERY_HOSTS } from '../../common/config.js';
+
+  export default {
+    data: {
+      statusText: '正在连接...',
+      connected: false,
+      hasCommands: false,
+      commandsCount: 0,
+      commandsList: [],
+      logMsg: '等待 PC 下发指令...',
+      keepScreenOn: false,
+      pollIntervalSec: 2,
+      viewMode: 'main', // 'main' | 'settings' | 'server_edit' | 'pairing' | 'discovery'
+      currentServerUrl: SERVER_URL,
+      defaultServerUrl: SERVER_URL,
+      inputServerHost: '',
+      knownIdMap: {},
+      watchToken: '',
+      pairingCode: '',
+      pairingSlots: ['·', '·', '·', '·', '·', '·'],
+      pairingHint: '输入网页上的六位配对码',
+      pairingBusy: false,
+      pairingStatus: '未配对',
+      pairingReturnView: 'main',
+      discoveryReturnView: 'main',
+      serverEditReturnView: 'settings',
+      discoveryBusy: false,
+      discoveryStatus: '准备搜索',
+      discoveredServers: []
+    },
+
+    onInit() {
+      console.info('PC Command Hub App onInit v1.1.6');
+      this.pollTimer = null;
+      this.isDestroyed = false;
+      this.isVisible = false;
+      this.isFetching = false;
+      this.knownIdMap = {};
+      this.discoveryGeneration = 0;
+      this.discoveryTimer = null;
+      this.loadSavedSettings();
+    },
+
+    onShow() {
+      console.info('PC Command Hub App onShow v1.1.6');
+      this.isDestroyed = false;
+      this.isVisible = true;
+      this.startPolling(300);
+      if (this.viewMode === 'discovery' && !this.discoveryBusy) this.startDiscovery();
+      if (this.keepScreenOn) {
+        this.applyKeepAwake(true);
+      }
+    },
+
+    onHide() {
+      console.info('PC Command Hub App onHide');
+      this.isVisible = false;
+      this.stopPolling();
+      this.cancelDiscovery();
+      this.applyKeepAwake(false);
+    },
+
+    onDestroy() {
+      console.info('PC Command Hub App onDestroy');
+      this.isDestroyed = true;
+      this.isVisible = false;
+      this.stopPolling();
+      this.cancelDiscovery();
+      this.applyKeepAwake(false);
+    },
+
+    // --- 本地持久化读取 ---
+    loadSavedSettings() {
+      try {
+        storage.get({
+          key: 'watch_token',
+          success: (data) => {
+            if (data && typeof data === 'string') {
+              this.watchToken = data;
+              this.pairingStatus = '已配对';
+            }
+          }
+        });
+        storage.get({
+          key: 'custom_server_url',
+          success: (data) => {
+            if (data && typeof data === 'string' && data.length > 5) {
+              this.currentServerUrl = data;
+              console.info('Restored saved server url:', data);
+            }
+          }
+        });
+        storage.get({
+          key: 'poll_interval_sec',
+          success: (data) => {
+            var s = parseInt(data);
+            if (s && s > 0) {
+              this.pollIntervalSec = s;
+            }
+          }
+        });
+        storage.get({
+          key: 'keep_screen_on',
+          success: (data) => {
+            if (data === 'true') {
+              this.keepScreenOn = true;
+              this.applyKeepAwake(true);
+            }
+          }
+        });
+      } catch (e) {
+        console.warn('Storage read failed:', e);
+      }
+    },
+
+    // --- 界面路由切换 ---
+    goToMain() {
+      this.viewMode = 'main';
+    },
+
+    goToSettings() {
+      this.viewMode = 'settings';
+    },
+
+    goToDiscovery() {
+      this.discoveryReturnView = this.viewMode === 'pairing' ? 'pairing' :
+        (this.viewMode === 'settings' ? 'settings' : 'main');
+      this.viewMode = 'discovery';
+      this.startDiscovery();
+    },
+
+    goBackFromDiscovery() {
+      this.cancelDiscovery();
+      this.viewMode = this.discoveryReturnView;
+    },
+
+    cancelDiscovery() {
+      this.discoveryGeneration = (this.discoveryGeneration || 0) + 1;
+      if (this.discoveryTimer) clearTimeout(this.discoveryTimer);
+      this.discoveryTimer = null;
+      this.discoveryBusy = false;
+    },
+
+    discoveryCandidatesForCurrentNetwork() {
+      var candidates = [];
+      var seen = {};
+      var add = function(url) {
+        if (typeof url !== 'string') return;
+        var clean = url.replace(/\/$/, '');
+        if (!/^https?:\/\/[a-z0-9.-]+(?::\d{1,5})?$/i.test(clean) || seen[clean]) return;
+        seen[clean] = true;
+        candidates.push(clean);
+      };
+
+      for (var i = 0; i < DISCOVERY_HOSTS.length; i++) add(DISCOVERY_HOSTS[i]);
+      add(this.currentServerUrl);
+      add(this.defaultServerUrl);
+
+      var known = [this.currentServerUrl, this.defaultServerUrl];
+      var prefixes = [];
+      var lastHost = 100;
+      var port = 8000;
+      var haveSeed = false;
+      for (var k = 0; k < known.length; k++) {
+        var match = /^http:\/\/(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?::(\d{1,5}))?$/.exec(known[k] || '');
+        if (!match) continue;
+        var a = Number(match[1]);
+        var b = Number(match[2]);
+        if (!(a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168))) continue;
+        var prefix = match[1] + '.' + match[2] + '.' + match[3] + '.';
+        if (prefixes.indexOf(prefix) === -1) prefixes.push(prefix);
+        if (!haveSeed) {
+          lastHost = Number(match[4]);
+          port = match[5] ? Number(match[5]) : 8000;
+          haveSeed = true;
+        }
+      }
+
+      var commonPrefixes = ['192.168.0.', '192.168.1.', '192.168.31.', '10.0.0.', '172.20.10.'];
+      for (var c = 0; c < commonPrefixes.length; c++) {
+        add('http://' + commonPrefixes[c] + lastHost + ':' + port);
+        add('http://' + commonPrefixes[c] + '100:' + port);
+      }
+
+      // Only scan subnets learned from saved or packaged addresses. The watch API
+      // exposes network type but not its own IP or a LAN broadcast socket.
+      for (var p = 0; p < prefixes.length; p++) {
+        for (var distance = 1; distance < 254; distance++) {
+          var lower = lastHost - distance;
+          var upper = lastHost + distance;
+          if (lower >= 1) add('http://' + prefixes[p] + lower + ':' + port);
+          if (upper <= 254) add('http://' + prefixes[p] + upper + ':' + port);
+        }
+      }
+      return candidates;
+    },
+
+    startDiscovery() {
+      if (this.viewMode !== 'discovery') return;
+      this.cancelDiscovery();
+      var generation = this.discoveryGeneration;
+      this.discoveredServers = [];
+      this.discoveryQueue = this.discoveryCandidatesForCurrentNetwork();
+      this.discoveryIndex = 0;
+      this.discoveryActive = 0;
+      this.discoveryBusy = true;
+      this.discoveryStatus = '正在尝试电脑名称与附近地址…';
+      this.discoveryTimer = setTimeout(() => {
+        if (generation !== this.discoveryGeneration) return;
+        this.cancelDiscovery();
+        this.discoveryStatus = '未找到电脑，请检查同一网络或手动输入';
+      }, 25000);
+      this.pumpDiscovery(generation);
+    },
+
+    pumpDiscovery(generation) {
+      if (generation !== this.discoveryGeneration || !this.discoveryBusy) return;
+      while (generation === this.discoveryGeneration && this.discoveryBusy &&
+             this.discoveryActive < 6 && this.discoveryIndex < this.discoveryQueue.length) {
+        const url = this.discoveryQueue[this.discoveryIndex++];
+        this.discoveryActive++;
+        try {
+          fetch.fetch({
+            url: url + '/api/health',
+            method: 'GET',
+            responseType: 'json',
+            success: (res) => {
+              if (generation !== this.discoveryGeneration || res.code !== 200) return;
+              try {
+                var data = typeof res.data === 'string' ? JSON.parse(res.data) : res.data;
+                if (data && data.status === 'ok' && data.app === 'Redmi Watch 5 Command Hub') {
+                  this.discoveredServers = [{ name: '指令助手服务', url: url }];
+                  this.cancelDiscovery();
+                  this.discoveryStatus = '已找到电脑，点击下方连接';
+                }
+              } catch (e) {}
+            },
+            fail: () => {},
+            complete: () => {
+              if (generation !== this.discoveryGeneration) return;
+              this.discoveryActive--;
+              if (this.discoveryIndex >= this.discoveryQueue.length && this.discoveryActive === 0) {
+                this.cancelDiscovery();
+                this.discoveryStatus = '未找到电脑，请手动输入地址';
+              } else {
+                this.pumpDiscovery(generation);
+              }
+            }
+          });
+        } catch (e) {
+          this.discoveryActive--;
+        }
+      }
+    },
+
+    selectDiscoveredServer(url) {
+      if (!this.discoveredServers.length || this.discoveredServers[0].url !== url) return;
+      this.cancelDiscovery();
+      this.currentServerUrl = url;
+      try { storage.set({ key: 'custom_server_url', value: url }); } catch (e) {}
+      this.connected = false;
+      if (this.discoveryReturnView === 'pairing') {
+        this.viewMode = 'pairing';
+        this.pairingHint = '已找到电脑，请输入六位配对码';
+      } else if (!this.watchToken) {
+        this.goToPairing();
+      } else {
+        this.viewMode = this.discoveryReturnView;
+        this.fetchPendingCommands();
+      }
+    },
+
+    goToServerEdit() {
+      // 提取 host 部分（去掉 http:// 或 https://）便于在数字键盘中编辑
+      var host = this.currentServerUrl.replace(/^https?:\/\//i, '');
+      this.inputServerHost = host;
+      this.serverEditReturnView = this.viewMode === 'discovery' ? 'discovery' : 'settings';
+      if (this.viewMode === 'discovery') this.cancelDiscovery();
+      this.viewMode = 'server_edit';
+    },
+
+    goBackFromServerEdit() {
+      this.viewMode = this.serverEditReturnView;
+      if (this.viewMode === 'discovery') this.startDiscovery();
+    },
+
+    restoreDefaultServer() {
+      this.currentServerUrl = SERVER_URL;
+      this.inputServerHost = SERVER_URL.replace(/^https?:\/\//i, '');
+      storage.set({ key: 'custom_server_url', value: SERVER_URL });
+      this.connected = false;
+      this.statusText = '连接中';
+      this.logMsg = '正在连接电脑';
+      prompt.showToast({ message: '已恢复安装包地址' });
+      this.fetchPendingCommands();
+    },
+
+    goToPairing() {
+      this.pairingReturnView = this.viewMode === 'settings' ? 'settings' : 'main';
+      this.pairingCode = '';
+      this.pairingHint = '输入网页上的六位配对码';
+      this.pairingBusy = false;
+      this.updatePairingSlots();
+      this.viewMode = 'pairing';
+    },
+
+    goBackFromPairing() {
+      this.viewMode = this.pairingReturnView;
+    },
+
+    updatePairingSlots() {
+      var slots = [];
+      for (var i = 0; i < 6; i++) {
+        slots.push(this.pairingCode.charAt(i) || '·');
+      }
+      this.pairingSlots = slots;
+    },
+
+    pressPairDigit(digit) {
+      if (this.pairingBusy || this.pairingCode.length >= 6) return;
+      this.pairingCode += digit;
+      this.updatePairingSlots();
+      this.pairingHint = this.pairingCode.length === 6 ? '确认数字后点击下方配对' : '已输入 ' + this.pairingCode.length + ' / 6 位';
+      try { vibrator.vibrate({ mode: 'short' }); } catch (e) {}
+    },
+
+    deletePairDigit() {
+      if (this.pairingBusy || !this.pairingCode) return;
+      this.pairingCode = this.pairingCode.slice(0, -1);
+      this.updatePairingSlots();
+      this.pairingHint = this.pairingCode ? '已输入 ' + this.pairingCode.length + ' / 6 位' : '输入网页上的六位配对码';
+      try { vibrator.vibrate({ mode: 'short' }); } catch (e) {}
+    },
+
+    clearPairingCode() {
+      if (this.pairingBusy) return;
+      this.pairingCode = '';
+      this.updatePairingSlots();
+      this.pairingHint = '输入网页上的六位配对码';
+      try { vibrator.vibrate({ mode: 'short' }); } catch (e) {}
+    },
+
+    submitPairing() {
+      if (this.pairingBusy) return;
+      if (this.pairingCode.length !== 6) {
+        this.pairingHint = '还需输入 ' + (6 - this.pairingCode.length) + ' 位数字';
+        return;
+      }
+      this.pairingBusy = true;
+      this.pairingHint = '正在连接电脑…';
+      fetch.fetch({
+        url: `${this.currentServerUrl}/api/v1/watch/pair`,
+        method: 'POST',
+        header: { 'Content-Type': 'application/json' },
+        data: JSON.stringify({ code: this.pairingCode }),
+        success: (res) => {
+          try {
+            var data = typeof res.data === 'string' ? JSON.parse(res.data) : res.data;
+            if (res.code !== 200 || !data || !data.token) throw new Error('pairing failed');
+            this.watchToken = data.token;
+            storage.set({ key: 'watch_token', value: data.token });
+            this.pairingStatus = '已配对';
+            this.pairingCode = '';
+            this.updatePairingSlots();
+            this.viewMode = 'main';
+            prompt.showToast({ message: '配对成功' });
+            this.fetchPendingCommands();
+          } catch (e) {
+            this.pairingHint = '配对码无效或已过期，请重新生成';
+          }
+        },
+        fail: () => { this.pairingHint = '连接失败，请检查电脑地址与网络'; },
+        complete: () => { this.pairingBusy = false; }
+      });
+    },
+
+    // --- 键盘输入逻辑 ---
+    pressKey(ch) {
+      this.inputServerHost = (this.inputServerHost || '') + ch;
+    },
+
+    deleteLastChar() {
+      if (this.inputServerHost && this.inputServerHost.length > 0) {
+        this.inputServerHost = this.inputServerHost.slice(0, -1);
+      }
+    },
+
+    clearInputHost() {
+      this.inputServerHost = '';
+    },
+
+    insertPreset(str) {
+      this.inputServerHost = (this.inputServerHost || '') + str;
+    },
+
+    serverUrlFromInput() {
+      var input = (this.inputServerHost || '').trim();
+      var match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?::(\d{1,5}))?$/.exec(input);
+      if (!match) return '';
+      for (var i = 1; i <= 4; i++) {
+        if (Number(match[i]) > 255) return '';
+      }
+      if (match[1] === '127' || input.indexOf('0.0.0.0') === 0) return '';
+      var port = match[5] ? Number(match[5]) : 8000;
+      if (port < 1 || port > 65535) return '';
+      return 'http://' + match[1] + '.' + match[2] + '.' + match[3] + '.' + match[4] + ':' + port;
+    },
+
+    testCustomConnection() {
+      var targetUrl = this.serverUrlFromInput();
+      if (!targetUrl) {
+        prompt.showToast({ message: '请输入有效的电脑局域网 IP' });
+        return;
+      }
+      prompt.showToast({ message: '正在探测服务...' });
+
+      fetch.fetch({
+        url: `${targetUrl}/api/health`,
+        method: 'GET',
+        success: (res) => {
+          prompt.showToast({ message: res.code === 200 ? '电脑服务可连接' : '服务响应异常: ' + res.code });
+        },
+        fail: (data, code) => {
+          prompt.showToast({ message: '无法连接 (代码:' + code + ')' });
+        }
+      });
+    },
+
+    saveCustomServer() {
+      var formatted = this.serverUrlFromInput();
+      if (!formatted) {
+        prompt.showToast({ message: '请输入有效的电脑局域网 IP' });
+        return;
+      }
+      this.currentServerUrl = formatted;
+
+      try {
+        storage.set({
+          key: 'custom_server_url',
+          value: formatted
+        });
+      } catch (e) {}
+
+      prompt.showToast({ message: '地址已保存并生效' });
+      if (this.serverEditReturnView === 'discovery') {
+        if (this.watchToken) this.viewMode = 'main';
+        else this.goToPairing();
+      } else {
+        this.viewMode = this.serverEditReturnView;
+      }
+      this.connected = false;
+      this.statusText = '连接中...';
+      this.fetchPendingCommands();
+    },
+
+    // --- 设置项调节 ---
+    setPollInterval(sec) {
+      if (this.pollIntervalSec === sec) return;
+      this.pollIntervalSec = sec;
+      try {
+        storage.set({ key: 'poll_interval_sec', value: String(sec) });
+      } catch (e) {}
+      prompt.showToast({ message: '已设为 ' + sec + ' 秒轮询' });
+      this.startPolling(100);
+    },
+
+    toggleKeepAwake() {
+      this.keepScreenOn = !this.keepScreenOn;
+      this.applyKeepAwake(this.keepScreenOn);
+      try {
+        storage.set({ key: 'keep_screen_on', value: String(this.keepScreenOn) });
+      } catch (e) {}
+      prompt.showToast({
+        message: this.keepScreenOn ? '常亮监听已开启' : '恢复自动熄屏'
+      });
+    },
+
+    applyKeepAwake(enable) {
+      try {
+        if (brightness && brightness.setKeepScreenOn) {
+          brightness.setKeepScreenOn({ keepScreenOn: enable });
+        } else if (device && device.setKeepScreenOn) {
+          device.setKeepScreenOn({ keepScreenOn: enable });
+        }
+      } catch (e) {
+        console.warn('Set keep screen on failed:', e);
+      }
+    },
+
+    testVibrate() {
+      try {
+        vibrator.vibrate({ mode: 'short' });
+        prompt.showToast({ message: '马达震动正常' });
+      } catch (e) {
+        prompt.showToast({ message: '震动调用失败' });
+      }
+    },
+
+    manualRefresh() {
+      prompt.showToast({ message: '正在同步...' });
+      this.fetchPendingCommands();
+    },
+
+    startPolling(delayMs) {
+      this.stopPolling();
+      var intervalMs = (this.pollIntervalSec || 2) * 1000;
+      this.pollTimer = setTimeout(() => {
+        this.fetchPendingCommands();
+      }, delayMs || intervalMs);
+    },
+
+    stopPolling() {
+      if (this.pollTimer) {
+        clearTimeout(this.pollTimer);
+        this.pollTimer = null;
+      }
+    },
+
+    fetchPendingCommands() {
+      if (this.isDestroyed || !this.isVisible) return;
+      if (this.isFetching) return;
+      if (this.viewMode === 'discovery') {
+        this.startPolling();
+        return;
+      }
+      if (!this.watchToken) {
+        this.connected = false;
+        this.statusText = '未配对';
+        this.pairingStatus = '未配对';
+        this.logMsg = '点击配对手表，输入电脑配对码';
+        this.startPolling();
+        return;
+      }
+      this.isFetching = true;
+
+      fetch.fetch({
+        url: `${this.currentServerUrl}/api/v1/watch/pending`,
+        method: 'GET',
+        header: { 'Authorization': 'Bearer ' + this.watchToken },
+        success: (res) => {
+          if (res.code === 401) {
+            this.connected = false;
+            this.statusText = '需重新配对';
+            this.pairingStatus = '需重新配对';
+            this.watchToken = '';
+            try { storage.set({ key: 'watch_token', value: '' }); } catch (e) {}
+            this.logMsg = '点击配对手表，重新输入配对码';
+            return;
+          }
+          if (res.code !== 200) {
+            this.connected = false;
+            this.statusText = '服务异常';
+            this.logMsg = '请检查电脑服务与地址';
+            return;
+          }
+          this.connected = true;
+          this.statusText = '已连接';
+
+          try {
+            var raw = res.data;
+            var data = null;
+            if (typeof raw === 'object' && raw !== null) {
+              data = raw;
+            } else if (typeof raw === 'string') {
+              data = JSON.parse(raw);
+            }
+
+            var list = [];
+            if (data && data.commands && data.commands.length !== undefined) {
+              list = data.commands;
+            } else if (data && data.command) {
+              list = [data.command];
+            }
+
+            var mergedList = [];
+            for (var i = 0; i < list.length; i++) {
+              var cmd = list[i];
+              if (!cmd.actions || cmd.actions.length === 0) {
+                cmd.actions = [
+                  { id: 'reject', text: '拒绝', style: 'danger' },
+                  { id: 'confirm', text: '允许一次', style: 'primary' }
+                ];
+              }
+              cmd.is_approval = !cmd.is_question && cmd.actions.some(function(action) {
+                return action.id === 'allow_always';
+              });
+
+              // 保留用户在手表界面已进行的勾选与输入状态
+              var existing = null;
+              for (var k = 0; k < this.commandsList.length; k++) {
+                if (this.commandsList[k].id === cmd.id) {
+                  existing = this.commandsList[k];
+                  break;
+                }
+              }
+
+              if (existing) {
+                cmd.selected_count = existing.selected_count || 0;
+                cmd.selected_text = existing.selected_text || '';
+                for (var a = 0; a < cmd.actions.length; a++) {
+                  var act = cmd.actions[a];
+                  for (var ea = 0; ea < existing.actions.length; ea++) {
+                    if (existing.actions[ea].id === act.id) {
+                      act.selected = !!existing.actions[ea].selected;
+                      break;
+                    }
+                  }
+                }
+              } else {
+                cmd.selected_count = 0;
+                cmd.selected_text = '';
+                for (var a = 0; a < cmd.actions.length; a++) {
+                  cmd.actions[a].selected = false;
+                }
+              }
+              // 预先去除电脑输入回退项，避免在模板同一节点混用 for/if。
+              // 两种指令同时存在时，编译器会在循环外判断 if，导致所有选项消失。
+              cmd.choice_actions = cmd.actions.filter(function(action) {
+                return action.id !== 'pc_input';
+              });
+              mergedList.push(cmd);
+            }
+
+            if (!this.knownIdMap) {
+              this.knownIdMap = {};
+            }
+
+            var hasNew = false;
+            for (var j = 0; j < mergedList.length; j++) {
+              var id = mergedList[j].id;
+              if (id && !this.knownIdMap[id]) {
+                hasNew = true;
+                this.knownIdMap[id] = true;
+              }
+            }
+
+            if (hasNew) {
+              try {
+                // A short pulse is easy to miss on Redmi Watch 5. New commands
+                // use the supported long pattern; button feedback stays short.
+                vibrator.vibrate({ mode: 'long' });
+              } catch (ve) {
+                console.error('New command vibration failed:', ve);
+              }
+              prompt.showToast({ message: '收到新指令！' });
+            }
+
+            this.commandsList = mergedList;
+            this.commandsCount = mergedList.length;
+            this.hasCommands = mergedList.length > 0;
+            if (mergedList.length === 0) {
+              this.logMsg = '等待 PC 下发指令...';
+            }
+          } catch (e) {
+            this.logMsg = '解析异常: ' + (e && e.message ? e.message : String(e));
+          }
+        },
+        fail: (data, code) => {
+          this.connected = false;
+          this.statusText = '未连接';
+          this.logMsg = '检查电脑地址与局域网';
+        },
+        complete: () => {
+          this.isFetching = false;
+          if (!this.isDestroyed && this.isVisible) {
+            this.startPolling();
+          }
+        }
+      });
+    },
+
+    // --- 选项勾选与单选/多选交互 (由 Codex is_multiselect 决定) ---
+    toggleOption(cIdx, aIdx) {
+      var cmd = this.commandsList[cIdx];
+      if (!cmd || !cmd.choice_actions || !cmd.choice_actions[aIdx]) return;
+      try { vibrator.vibrate({ mode: 'short' }); } catch (e) {}
+
+      var act = cmd.choice_actions[aIdx];
+      var isMulti = !!cmd.is_multiselect;
+
+      if (isMulti) {
+        // 多选模式：自由勾选或反选
+        act.selected = !act.selected;
+      } else {
+        // 单选模式：互斥选中当前项
+        var targetState = !act.selected;
+        for (var i = 0; i < cmd.choice_actions.length; i++) {
+          cmd.choice_actions[i].selected = false;
+        }
+        act.selected = targetState;
+        cmd.selected_text = targetState ? act.text : '';
+      }
+
+      var count = 0;
+      var selText = '';
+      for (var j = 0; j < cmd.choice_actions.length; j++) {
+        if (cmd.choice_actions[j].selected) {
+          count++;
+          selText = cmd.choice_actions[j].text;
+        }
+      }
+      cmd.selected_count = count;
+      cmd.selected_text = selText;
+
+      // 重新赋值触发数据监听更新
+      this.commandsList = [].concat(this.commandsList);
+    },
+
+    submitSelection(cIdx) {
+      var cmd = this.commandsList[cIdx];
+      if (!cmd || !cmd.choice_actions) return;
+      var selectedIds = [];
+      for (var i = 0; i < cmd.choice_actions.length; i++) {
+        if (cmd.choice_actions[i].selected) {
+          selectedIds.push(cmd.choice_actions[i].id);
+        }
+      }
+      if (selectedIds.length === 0) {
+        prompt.showToast({ message: '请先在上方勾选选项' });
+        return;
+      }
+      this.sendReplyToServer(cmd.id, {
+        action_id: selectedIds[0],
+        action_ids: selectedIds,
+        device_id: 'redmi-watch-5'
+      }, '选择已提交！');
+    },
+
+    // --- 统一向服务器提交回复 ---
+    sendReplyToServer(cmdId, body, successMsg) {
+      if (!cmdId) return;
+      try { vibrator.vibrate({ mode: 'short' }); } catch (ve) {}
+
+      prompt.showToast({ message: '正在提交选择...' });
+
+      // 乐观 UI 更新：立即从当前列表移除
+      var filtered = [];
+      for (var i = 0; i < this.commandsList.length; i++) {
+        if (this.commandsList[i].id !== cmdId) {
+          filtered.push(this.commandsList[i]);
+        }
+      }
+      this.commandsList = filtered;
+      this.commandsCount = filtered.length;
+      this.hasCommands = filtered.length > 0;
+
+      fetch.fetch({
+        url: `${this.currentServerUrl}/api/v1/watch/commands/${cmdId}/reply`,
+        method: 'POST',
+        header: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + this.watchToken
+        },
+        data: JSON.stringify(body),
+        success: (res) => {
+          if (res.code !== 200) {
+            prompt.showToast({ message: '提交失败，请检查配对' });
+            this.fetchPendingCommands();
+            return;
+          }
+          prompt.showToast({ message: successMsg || '回复成功！' });
+          setTimeout(() => {
+            this.fetchPendingCommands();
+          }, 300);
+        },
+        fail: (data, code) => {
+          prompt.showToast({ message: '提交失败，请重试' });
+          this.fetchPendingCommands();
+        }
+      });
+    },
+
+    handleReply(cmdId, actionId) {
+      this.sendReplyToServer(cmdId, {
+        action_id: actionId,
+        device_id: 'redmi-watch-5'
+      }, '回复成功！');
+    }
+  };
+</script>

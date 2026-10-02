@@ -1,0 +1,16 @@
+{
+  "name": "com.young.watchcommand",
+  "version": "1.0.0",
+  "description": "Redmi Watch 5 PC Command Quick App",
+  "scripts": {
+    "build": "node pack.js debug",
+    "release": "node pack.js release",
+    "pack": "node pack.js",
+    "server": "hap server"
+  },
+  "devDependencies": {
+    "@aiot-toolkit/aiotpack": "^2.0.5",
+    "hap-toolkit": "^2.1.1",
+    "jszip": "^3.10.2"
+  }
+}

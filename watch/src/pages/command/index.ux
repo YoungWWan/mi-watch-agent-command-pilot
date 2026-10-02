@@ -1,0 +1,148 @@
+<template>
+  <div class="command-container">
+    <text class="header-title">{{command.title || '指令详情'}}</text>
+
+    <div class="content-box">
+      <text class="body-text">{{command.content || ''}}</text>
+    </div>
+
+    <!-- 动态 Action 按钮组 (支持 2-3 个按钮) -->
+    <div class="actions-group">
+      <block for="{{actionsList}}">
+        <input
+          type="button"
+          class="btn-action btn-{{$item.style || 'default'}}"
+          value="{{$item.text}}"
+          onclick="handleReply($item.id)"
+        />
+      </block>
+    </div>
+  </div>
+</template>
+
+<style>
+  .command-container {
+    width: 432px;
+    height: 514px;
+    flex-direction: column;
+    align-items: center;
+    background-color: #080c0b;
+    padding: 24px 20px;
+  }
+  .header-title {
+    color: #c8fa4b;
+    font-size: 30px;
+    font-weight: bold;
+    margin-bottom: 12px;
+    text-align: center;
+  }
+  .content-box {
+    width: 390px;
+    height: 250px;
+    background-color: #171d19;
+    border-radius: 16px;
+    padding: 18px;
+    margin-bottom: 24px;
+    flex-direction: column;
+  }
+  .body-text {
+    color: #f2f5ef;
+    font-size: 24px;
+    line-height: 34px;
+  }
+  .actions-group {
+    width: 390px;
+    flex-direction: row;
+    justify-content: space-around;
+  }
+  .btn-action {
+    height: 80px;
+    border-radius: 40px;
+    font-size: 26px;
+    font-weight: bold;
+    padding: 0 32px;
+  }
+  .btn-primary {
+    background-color: #c8fa4b;
+    color: #11170c;
+  }
+  .btn-danger {
+    background-color: #402523;
+    color: #ffffff;
+  }
+  .btn-default {
+    background-color: #344036;
+    color: #ffffff;
+  }
+</style>
+
+<script>
+  import fetch from '@system.fetch';
+  import prompt from '@system.prompt';
+  import router from '@system.router';
+  import vibrator from '@system.vibrator';
+  import storage from '@system.storage';
+  import { SERVER_URL } from '../../common/config.js';
+
+  export default {
+    data: {
+      command: {},
+      actionsList: [],
+      watchToken: '',
+      currentServerUrl: SERVER_URL
+    },
+    onInit() {
+      if (typeof this.command === 'string') {
+        try {
+          this.command = JSON.parse(this.command);
+        } catch (e) {
+          console.error('Failed to parse command param:', e);
+        }
+      }
+      this.actionsList = (this.command && this.command.actions) ? this.command.actions : [
+        { id: 'reject', text: '拒绝', style: 'danger' },
+        { id: 'confirm', text: '确认', style: 'primary' }
+      ];
+      storage.get({ key: 'watch_token', success: (token) => { this.watchToken = token || ''; } });
+      storage.get({ key: 'custom_server_url', success: (url) => { if (url) this.currentServerUrl = url; } });
+    },
+    handleReply(actionId) {
+      if (!this.watchToken) {
+        prompt.showToast({ message: '请先在设置中配对手表' });
+        return;
+      }
+      try {
+        vibrator.vibrate({ mode: 'short' });
+      } catch (ve) {}
+
+      prompt.showToast({ message: '正在发送回复...' });
+
+      fetch.fetch({
+        url: `${this.currentServerUrl}/api/v1/watch/commands/${this.command.id}/reply`,
+        method: 'POST',
+        header: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + this.watchToken
+        },
+        data: JSON.stringify({
+          action_id: actionId,
+          device_id: 'redmi-watch-5'
+        }),
+        success: (res) => {
+          if (res.code !== 200) {
+            prompt.showToast({ message: '回复失败，请检查配对' });
+            return;
+          }
+          prompt.showToast({ message: '✓ 回复成功' });
+          setTimeout(() => {
+            router.back();
+          }, 800);
+        },
+        fail: (err) => {
+          console.error('Reply fail:', err);
+          prompt.showToast({ message: '发送失败，请重试' });
+        }
+      });
+    }
+  };
+</script>
