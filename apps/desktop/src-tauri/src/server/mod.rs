@@ -198,7 +198,9 @@ mod tests {
         assert_eq!(info["watch_paired"], true);
         server.restart().unwrap();
         assert_eq!(server.info()["port"], new_port);
-        assert!(client.get(format!("http://127.0.0.1:{new_port}/api/health")).send().await.unwrap().status().is_success());
+        // Restart closes all existing sockets. Probe the new listener rather than
+        // reusing the old HTTP keep-alive connection, which Windows can abort.
+        assert!(reqwest::Client::new().get(format!("http://127.0.0.1:{new_port}/api/health")).send().await.unwrap().status().is_success());
     }
 
     #[tokio::test]

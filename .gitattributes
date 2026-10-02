@@ -1,0 +1,2 @@
+# This payload is signed byte-for-byte. Do not convert it to CRLF on Windows.
+apps/desktop/src-tauri/tests/fixtures/desktop-update.txt -text

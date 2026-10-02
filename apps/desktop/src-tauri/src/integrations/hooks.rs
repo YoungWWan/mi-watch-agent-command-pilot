@@ -488,7 +488,15 @@ mod tests {
             if shell == "cmd.exe" {
                 process.args(["/D", "/S", "/C", &command]);
             } else {
-                process.args(["-NoProfile", "-NonInteractive", "-Command", &command]);
+                // PowerShell does not connect its own redirected stdin to a native
+                // command's pipeline. Forward the JSON explicitly, with UTF-8 at
+                // both ends, instead of launching the wrapper with an empty pipe.
+                let script = format!(
+                    "$OutputEncoding = [Console]::InputEncoding = [Console]::OutputEncoding = \
+                     New-Object System.Text.UTF8Encoding; \
+                     [Console]::In.ReadToEnd() | {command}; exit $LASTEXITCODE"
+                );
+                process.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
             }
             let mut child = process
                 .env("REDMI_WATCH_STDIO_FIXTURE", "1")
@@ -506,7 +514,7 @@ mod tests {
             let output = child.wait_with_output().unwrap();
             assert!(
                 output.status.success(),
-                "{}",
+                "{shell}: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
             assert!(String::from_utf8(output.stdout)

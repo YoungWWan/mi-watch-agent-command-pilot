@@ -32,6 +32,8 @@ Claude Desktop 优先使用标准 AppData 配置；仅在标准文件不存在�
 
 MCP 以 JSON/TOML 的独立 `command` 和 `args` 启动。Windows Claude Code 钩子采用直接执行形式；Codex、Cursor 钩子使用系统 PowerShell 的 UTF-16 编码启动命令，并直接转发原始 stdin/stdout，避免不同外层 shell 的引号及中文编码差异。不要手动把这些命令改成 Bash 的单引号形式。
 
+手动用 `powershell.exe -Command` 再启动钩子时，外层 PowerShell 不会自动把自己的 stdin 传给本机命令。需要显式通过管道传入 JSON，并将 `$OutputEncoding`、`[Console]::InputEncoding` 和 `[Console]::OutputEncoding` 设为 UTF-8；直接启动生成的 PowerShell 命令或通过 `cmd.exe` 启动则使用原始输入流。参见 [PowerShell 输入流说明](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_redirection?view=powershell-7.5)。
+
 本次适配面向 Windows 原生 Agent。WSL 使用自己的 Linux 用户目录、可执行文件和网络环境，需要单独接入；当前 Windows GUI 不会自动改写 WSL 内的配置。Windows 日常使用以桌面页生成的内置入口为准。
 
 ## 在 Windows 构建
