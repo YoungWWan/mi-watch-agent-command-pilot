@@ -186,10 +186,20 @@ pnpm tauri build
 ```bash
 cd watch
 npm ci
+npm run build
+```
+
+`npm run build` 生成调试包，可使用工具链内置的开发证书，产物位于 `watch/dist/`。Release 包使用 `npm run release`，需要你自己的本地签名证书。若尚无证书，可在 `watch` 目录生成开发用证书：
+
+```bash
+mkdir -p sign
+openssl req -x509 -newkey rsa:2048 -nodes -keyout sign/private.pem -out sign/certificate.pem -days 3650 -subj "/CN=watch-app-development"
 npm run release
 ```
 
-调试包使用 `npm run build`，产物位于 `watch/dist/`。构建时自动检测电脑局域网地址，也可设置 `WATCH_SERVER_URL` 指定默认服务地址。构建会生成 `watch/src/common/config.js`；该本机配置与 `watch/sign/` 下的本地签名文件不提交到仓库。显式指定 `WATCH_SERVER_URL` 时，不会把本机 Bonjour 名称写入安装包。
+私钥和证书放在 `watch/sign/`，不提交到仓库；正式发布应由维护者保存并复用对应签名材料。
+
+构建时自动检测电脑局域网地址，也可设置 `WATCH_SERVER_URL` 指定默认服务地址。构建会生成 `watch/src/common/config.js`；该本机配置不提交到仓库。显式指定 `WATCH_SERVER_URL` 时，不会把本机 Bonjour 名称写入安装包。
 
 仓库内置安装包使用示例地址 `http://192.168.1.100:8000`，首次配对时请在手表上输入桌面应用显示的实际电脑地址。构建公开安装包可使用 `WATCH_SERVER_URL=http://192.168.1.100:8000 npm run release`。
 
