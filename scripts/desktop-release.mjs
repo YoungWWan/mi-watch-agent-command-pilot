@@ -28,7 +28,7 @@ export function validateVersion(version) {
 export function releaseVersion(root = projectRoot, tag) {
   const version = validateVersion(readJson(join(root, configPath)).version);
   const cargo = readFileSync(join(root, cargoPath), 'utf8').match(/^\[package\][\s\S]*?^version = "([^"]+)"/m)?.[1];
-  const lock = readFileSync(join(root, lockPath), 'utf8').match(/name = "agent-command-pilot"\nversion = "([^"]+)"/)?.[1];
+  const lock = readFileSync(join(root, lockPath), 'utf8').match(/name = "agent-command-pilot"\r?\nversion = "([^"]+)"/)?.[1];
   if ([cargo, lock, ...packages.map((path) => readJson(join(root, path)).version)].some((other) => other !== version)) {
     throw new Error('桌面版本不一致，请运行 node scripts/desktop-release.mjs version <版本>');
   }
@@ -46,7 +46,7 @@ export function setVersion(version, root = projectRoot) {
   const cargo = join(root, cargoPath);
   writeFileSync(cargo, readFileSync(cargo, 'utf8').replace(/(^\[package\][\s\S]*?^version = ")[^"]+("$)/m, `$1${version}$2`));
   const lock = join(root, lockPath);
-  writeFileSync(lock, readFileSync(lock, 'utf8').replace(/(name = "agent-command-pilot"\nversion = ")[^"]+("\n)/, `$1${version}$2`));
+  writeFileSync(lock, readFileSync(lock, 'utf8').replace(/(name = "agent-command-pilot"\r?\nversion = ")[^"]+("\r?\n)/, `$1${version}$2`));
   return releaseVersion(root);
 }
 

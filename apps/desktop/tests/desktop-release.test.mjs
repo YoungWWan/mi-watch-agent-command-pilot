@@ -29,6 +29,22 @@ test('version bump updates all desktop manifests and rejects a mismatched releas
   assert.throws(() => releaseVersion(root, 'v1.1.0'), /不一致/);
 });
 
+test('release versions read and update Cargo files checked out with Windows CRLF', (t) => {
+  const root = fixture(t);
+  const paths = ['apps/desktop/src-tauri/Cargo.toml', 'apps/desktop/src-tauri/Cargo.lock'];
+  for (const relative of paths) {
+    const path = join(root, relative);
+    writeFileSync(path, readFileSync(path, 'utf8').replace(/\r?\n/g, '\r\n'));
+  }
+  const current = JSON.parse(readFileSync(join(root, 'package.json'))).version;
+  assert.equal(releaseVersion(root, `v${current}`), current);
+  assert.equal(setVersion('1.1.1', root), '1.1.1');
+  assert.equal(releaseVersion(root, 'v1.1.1'), '1.1.1');
+  for (const relative of paths) {
+    assert.ok(readFileSync(join(root, relative), 'utf8').includes('\r\n'));
+  }
+});
+
 test('release preparation writes the actual repository and requires a real signing public key', (t) => {
   const root = fixture(t);
   const version = releaseVersion(root);
