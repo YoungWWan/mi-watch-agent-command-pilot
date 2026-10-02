@@ -92,9 +92,14 @@ fn powershell_quote(value: &str) -> String {
 fn windows_command(binary: &str, arguments: &str) -> String {
     // cmd.exe and PowerShell tokenize quoted executable paths differently. The outer
     // command contains only ASCII tokens; paths and arguments are UTF-16 literals in
-    // the encoded script. Forward raw streams to avoid PowerShell 5.1 re-encoding JSON.
+    // the encoded script. PowerShell 5.1 feeds redirected stdin into $input; reading
+    // the OS handle again loses buffered input. Encode the JSON explicitly for the
+    // native child, and forward its output streams without PowerShell formatting.
     let script = format!(
         "# redmi-watch-command-v1\n$ErrorActionPreference = 'Stop'; \
+         [Console]::InputEncoding = New-Object System.Text.UTF8Encoding; \
+         $json = [string]::Join([Environment]::NewLine, @($input)); \
+         $bytes = [System.Text.Encoding]::UTF8.GetBytes($json); \
          $start = New-Object System.Diagnostics.ProcessStartInfo; \
          $start.FileName = {}; $start.Arguments = {}; \
          $start.UseShellExecute = $false; $start.CreateNoWindow = $true; \
@@ -102,7 +107,7 @@ fn windows_command(binary: &str, arguments: &str) -> String {
          $process = New-Object System.Diagnostics.Process; $process.StartInfo = $start; [void]$process.Start(); \
          $output = $process.StandardOutput.BaseStream.CopyToAsync([Console]::OpenStandardOutput()); \
          $errors = $process.StandardError.BaseStream.CopyToAsync([Console]::OpenStandardError()); \
-         [Console]::OpenStandardInput().CopyTo($process.StandardInput.BaseStream); $process.StandardInput.Close(); \
+         $process.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length); $process.StandardInput.Close(); \
          $process.WaitForExit(); [void]$output.GetAwaiter().GetResult(); [void]$errors.GetAwaiter().GetResult(); exit $process.ExitCode",
         powershell_quote(binary), powershell_quote(arguments)
     );
@@ -408,7 +413,8 @@ mod tests {
         let script = decoded_windows_command(command).unwrap();
         assert!(script.contains(&powershell_quote(binary)));
         assert!(script.contains("--hook permission --app \"Codex\""));
-        assert!(script.contains("OpenStandardInput"));
+        assert!(script.contains("@($input)"));
+        assert!(script.contains("UTF8.GetBytes($json)"));
         assert!(script.contains("OpenStandardOutput"));
         assert!(!script.contains("ExecutionPolicy"));
         assert!(owned(&encoded));
@@ -460,7 +466,8 @@ mod tests {
         use std::io::Read;
         let mut input = String::new();
         std::io::stdin().read_to_string(&mut input).unwrap();
-        let value: Value = serde_json::from_str(&input).unwrap();
+        let value: Value = serde_json::from_str(&input)
+            .unwrap_or_else(|error| panic!("{error}; fixture stdin={input:?}"));
         println!("STDIO_FIXTURE:{}", value);
     }
 
@@ -494,7 +501,7 @@ mod tests {
                 let script = format!(
                     "$OutputEncoding = [Console]::InputEncoding = [Console]::OutputEncoding = \
                      New-Object System.Text.UTF8Encoding; \
-                     [Console]::In.ReadToEnd() | {command}; exit $LASTEXITCODE"
+                     $input | {command}; exit $LASTEXITCODE"
                 );
                 process.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
             }
