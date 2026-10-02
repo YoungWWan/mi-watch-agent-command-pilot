@@ -57,6 +57,8 @@ node ../../scripts/check-native-integrations.mjs src-tauri/target/release/agent-
 
 仓库根目录的 `.github/workflows/windows-build.yml` 在 Windows runner 上执行前端测试、Rust 测试、NSIS 打包及发布版 MCP/钩子标准输入输出检查，并上传安装包 artifact。Rust 测试还会复制可执行文件到含中文、空格和特殊字符的目录，分别通过 `cmd.exe` 与 PowerShell 验证 UTF-8 JSON 往返。它不发布 GitHub Release。
 
+`src-tauri/build.rs` 同时为 MSVC 应用和测试可执行文件嵌入 `windows-app-manifest.xml`，启用 Common Controls v6。缺少该清单时，Tauri 的测试程序可能在执行测试前以 `STATUS_ENTRYPOINT_NOT_FOUND` 退出；处理方式参考 [Tauri 官方构建示例](https://github.com/tauri-apps/tauri/blob/dev/examples/api/src-tauri/build.rs)。
+
 ## 验证范围
 
 已在 macOS 通过前端构建、前端测试、Rust 测试和原生入口检查，并对配置模块及 Windows 蓝牙实现执行 Windows MSVC 目标的编译检查。完整 Windows 安装包、Windows shell 测试和蓝牙真机连接仍需在 Windows runner / Windows 电脑实际执行；macOS 没有 Windows SDK，不能替代这部分验证。
