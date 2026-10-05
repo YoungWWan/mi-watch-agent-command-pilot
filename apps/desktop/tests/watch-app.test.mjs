@@ -47,7 +47,7 @@ test('older and unknown versions are not labelled with the bundled version name'
 
 // Exercise the component's async handlers with a lightweight hook host and
 // mocked Tauri transport, so no test connects to or changes a real watch.
-function appHarness({ queries = [], install, server = { status: 'running', watch_paired: true } } = {}) {
+function appHarness({ queries = [], install, accountStatus, devices, connection, server = { status: 'running', watch_paired: true } } = {}) {
   const slots = [];
   const calls = [];
   const listeners = new Map();
@@ -77,12 +77,12 @@ function appHarness({ queries = [], install, server = { status: 'running', watch
   const invoke = async (command, args) => {
     calls.push({ command, args });
     switch (command) {
-      case 'account_xiaomi_get_status': return { logged_in: true, device_count: 1 };
-      case 'account_xiaomi_get_devices': return [{ name: 'Redmi Watch 5', mac: 'AA:BB', has_authkey: true, is_verified: true }];
+      case 'account_xiaomi_get_status': return accountStatus ? accountStatus() : { logged_in: true, device_count: 1 };
+      case 'account_xiaomi_get_devices': return devices ? devices() : [{ name: 'Redmi Watch 5', mac: 'AA:BB', has_authkey: true, is_verified: true }];
       case 'service_get_info': return server;
       case 'command_list_all':
       case 'integration_get_statuses': return [];
-      case 'connect_and_auth':
+      case 'connect_and_auth': return connection ? connection() : { success: true };
       case 'disconnect_device': return { success: true };
       case 'query_device_apps': {
         const result = queries.shift();
@@ -110,6 +110,7 @@ function appHarness({ queries = [], install, server = { status: 'running', watch
         };
         case './CommandCenter': return { CommandCenter: 'command-center' };
         case './IntegrationManagement': return { IntegrationManagement: 'integration-management' };
+        case './IntegrationStatus': return { IntegrationStatus: 'integration-status' };
         case './AgentTabs': return { AgentTabs: 'agent-tabs' };
         case './WatchIllustration': return { WatchIllustration: 'watch-illustration' };
         case 'lucide-react': return new Proxy({}, { get: (_, key) => String(key) });
@@ -162,6 +163,50 @@ function appHarness({ queries = [], install, server = { status: 'running', watch
   }
   return { calls, queries, ready, connect, render, button, pairingPanel, panelText: () => content(pairingPanel()), text: () => content(render()), progress: (payload) => listeners.get('install-progress')({ payload }) };
 }
+
+test('expired cloud authorization at startup displays the cause and returns to login', async () => {
+  let loggedIn = true;
+  const app = appHarness({
+    accountStatus: () => ({ logged_in: loggedIn, device_count: loggedIn ? 1 : 0 }),
+    devices: () => { loggedIn = false; throw '小米登录授权已失效（401），请重新扫码登录'; },
+  });
+  await app.ready();
+  assert.match(app.text(), /登录授权已失效（401）/);
+  assert.match(app.text(), /请重新登录小米账号/);
+  assert.equal(Boolean(app.button('登录小米账号').disabled), false);
+  assert.doesNotMatch(app.text(), /Redmi Watch 5|还没有发现设备/);
+  assert.equal(app.calls.filter(call => call.command === 'connect_and_auth').length, 0);
+});
+
+test('cloud network failure remains retryable and a successful refresh clears the warning', async () => {
+  let offline = true;
+  const app = appHarness({ devices: () => {
+    if (offline) throw '查询小米运动健康设备失败: connection timed out';
+    return [{ name: 'Redmi Watch 5', mac: 'AA:BB', has_authkey: true, is_verified: true }];
+  } });
+  await app.ready();
+  assert.match(app.text(), /设备同步失败.*connection timed out|connection timed out.*设备同步失败/);
+  assert.doesNotMatch(app.text(), /在小米运动健康中绑定设备/);
+  offline = false;
+  await app.button('刷新设备').onClick();
+  await flush();
+  assert.match(app.text(), /Redmi Watch 5/);
+  assert.doesNotMatch(app.text(), /connection timed out|设备同步失败/);
+});
+
+test('authorization expiring on connect updates account state and never queries installed apps', async () => {
+  let loggedIn = true;
+  const app = appHarness({
+    accountStatus: () => ({ logged_in: loggedIn, device_count: loggedIn ? 1 : 0 }),
+    connection: () => { loggedIn = false; throw '小米登录授权已失效（401），请重新扫码登录'; },
+  });
+  await app.ready();
+  await app.connect();
+  assert.match(app.text(), /登录授权已失效（401）/);
+  assert.match(app.text(), /请重新登录小米账号/);
+  assert.equal(Boolean(app.button('登录小米账号').disabled), false);
+  assert.equal(app.calls.filter(call => call.command === 'query_device_apps').length, 0);
+});
 
 test('saved pairing alone is never presented as a verified watch connection', async () => {
   const app = appHarness();

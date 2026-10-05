@@ -227,6 +227,12 @@ impl CommandManager {
         }
     }
 
+    pub(crate) fn expire_command(&self, id: &str) {
+        if let Some(command) = self.commands.write().get_mut(id) {
+            if command.status == CommandStatus::Pending { command.status = CommandStatus::Expired; }
+        }
+    }
+
     pub fn expire_pending(&self) {
         let mut commands = self.commands.write();
         let mut waiters = self.waiters.lock();

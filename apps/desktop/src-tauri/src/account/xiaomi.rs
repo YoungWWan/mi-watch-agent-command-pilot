@@ -414,6 +414,34 @@ pub async fn check_qr_login(lp_url: &str) -> Result<QrPollResponse> {
 }
 
 /// Fetch list of bound wearable devices from https://hlth.io.mi.com/app/v1/source/get_source_list
+pub async fn fetch_account_devices() -> Result<Vec<XiaomiDevice>> {
+    let creds = load_saved_credentials().ok_or_else(|| anyhow!("请先登录小米账号"))?;
+    match fetch_source_devices(&creds).await {
+        Ok(devices) => Ok(devices),
+        Err(error) => {
+            log::warn!("[Xiaomi Account] Fetch failed: {error:#}");
+            if is_expired_authorization(&error) {
+                // A failed request from an older session must not clear a new login.
+                if load_saved_credentials().is_some_and(|current| {
+                    current.user_id == creds.user_id
+                        && current.service_token == creds.service_token
+                }) {
+                    clear_credentials().context("清理失效的小米登录凭据失败")?;
+                }
+                return Err(error.context("小米登录授权已失效（401），请重新扫码登录"));
+            }
+            Err(error)
+        }
+    }
+}
+
+fn is_expired_authorization(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<reqwest::Error>().is_some_and(|error| {
+        error.status() == Some(reqwest::StatusCode::UNAUTHORIZED)
+    })
+}
+
+/// Fetch the cloud list using the supplied credentials, without changing the login session.
 pub async fn fetch_source_devices(creds: &XiaomiCredentials) -> Result<Vec<XiaomiDevice>> {
     if creds.service_token.trim().is_empty() {
         return Err(anyhow!("serviceToken 为空，未能获取有效云端授权"));
@@ -1024,6 +1052,37 @@ pub async fn complete_verification(app: &tauri::AppHandle, id: &str) -> Result<Q
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_http_401_through_query_context() {
+        let response = reqwest::Response::from(
+            axum::http::Response::builder()
+                .status(401)
+                .body("{\"code\":3,\"message\":\"auth err\"}")
+                .unwrap(),
+        );
+        let error = anyhow::Error::new(response.error_for_status().unwrap_err())
+            .context("查询小米运动健康设备失败");
+        assert_eq!(error.to_string(), "查询小米运动健康设备失败");
+        assert!(is_expired_authorization(&error));
+        assert!(format!("{error:#}").contains("401"));
+    }
+
+    #[test]
+    fn transient_or_text_errors_do_not_expire_the_session() {
+        for status in [403, 429, 500, 503] {
+            let response = reqwest::Response::from(
+                axum::http::Response::builder()
+                    .status(status)
+                    .body("auth err 401")
+                    .unwrap(),
+            );
+            let error = anyhow::Error::new(response.error_for_status().unwrap_err())
+                .context("查询小米运动健康设备失败");
+            assert!(!is_expired_authorization(&error));
+        }
+        assert!(!is_expired_authorization(&anyhow!("connection timeout 401")));
+    }
 
     #[test]
     fn legacy_cached_devices_rederive_names_and_validation_from_model() {

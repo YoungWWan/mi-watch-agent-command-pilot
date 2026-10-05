@@ -1,6 +1,6 @@
 [package]
 name = "agent-command-pilot"
-version = "1.1.1"
+version = "1.2.0"
 default-run = "agent-command-pilot"
 description = "小米手表 AI 指令助手 - AI questions, approvals and completion reminders on your watch"
 authors = ["Young <young@project>"]

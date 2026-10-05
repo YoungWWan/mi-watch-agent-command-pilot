@@ -31,4 +31,13 @@ assert.equal(responses[0].result.serverInfo.name, 'agent-command-pilot');
 assert.ok(responses[1].result.tools.some(tool => tool.name === 'ask_watch_question'));
 assert.equal(responses[2].result.isError, true);
 assert.deepEqual(run(['--hook', 'integration-check'], JSON.stringify({ message: '中文钩子输入 💡' })), [{}]);
+// These events must finish without contacting the watch or granting a permission.
+assert.deepEqual(run(['--hook', 'permission', '--app', 'Antigravity'], '{invalid'), [{ decision: 'ask' }]);
+assert.deepEqual(run(['--hook', 'permission', '--app', 'Antigravity'], '{}'), [{ decision: 'ask' }]);
+assert.deepEqual(run(['--hook', 'stop', '--app', 'Antigravity'], '{invalid'), [{ decision: 'stop' }]);
+assert.deepEqual(run(['--hook', 'stop', '--app', 'Antigravity'], JSON.stringify({ fullyIdle: false, terminationReason: 'model_stop' })), [{ decision: 'stop' }]);
+assert.deepEqual(run(['--hook', 'stop', '--app', 'Antigravity'], JSON.stringify({ fullyIdle: true, terminationReason: 'error' })), [{ decision: 'stop' }]);
+assert.deepEqual(run(['--hook', 'permission', '--app', 'Kimi Code'], JSON.stringify({ hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: '中文输入 💡' } })), [{}]);
+assert.deepEqual(run(['--hook', 'attention', '--app', 'Kimi Code'], JSON.stringify({ hook_event_name: 'Stop' })), [{}]);
+assert.deepEqual(run(['--hook', 'stop', '--app', 'ZCode'], JSON.stringify({ hook_event_name: 'PermissionRequest' })), [{}]);
 console.log('Native MCP and hook stdio checks passed.');

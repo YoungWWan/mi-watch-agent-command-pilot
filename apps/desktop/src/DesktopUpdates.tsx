@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Download, RefreshCw, X, ChevronDown } from "lucide-react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import desktopPackage from "../package.json";
 import {
   DesktopUpdateController, updateIsBusy,
@@ -106,7 +108,16 @@ export function DesktopUpdatePanel({ state, install, blocked, check }: UpdatePro
     {state.available && <>
       <details className="disclosure desktop-update-notes" open>
         <summary><span>v{state.available.version} 更新说明</span><ChevronDown size={14} /></summary>
-        <pre>{state.available.notes || "此版本包含改进与问题修复。"}</pre>
+        <div className="desktop-update-markdown">
+          <Markdown remarkPlugins={[remarkGfm]} components={{
+            a: ({ href, title, children }) => href
+              ? <a href={href} title={title} target="_blank" rel="noopener noreferrer">{children}</a>
+              : <span>{children}</span>,
+            table: ({ children }) => <div className="desktop-update-table"><table>{children}</table></div>,
+          }}>
+            {state.available.notes?.trim() || "此版本包含改进与问题修复。"}
+          </Markdown>
+        </div>
       </details>
       <UpdateProgress state={state} />
       <div className="desktop-update-footer">

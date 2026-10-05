@@ -1,5 +1,7 @@
 use std::{
     fs::{self, File},
+    future::Future,
+    net::SocketAddr,
     path::PathBuf,
     sync::{
         Arc,
@@ -16,10 +18,12 @@ use pb::xiaomi::protocol;
 use pcap_file::pcap::PcapWriter;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::{
-    io::{self, AsyncWriteExt},
+    io::{self, AsyncRead, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
     runtime::Handle,
     sync::{mpsc, watch},
+    task::JoinSet,
+    time::timeout,
 };
 use tokio_util::sync::PollSender;
 use udp_stream::UdpStream;
@@ -46,6 +50,85 @@ mod tun;
 use dhcp::maybe_build_reply;
 use meter::BandwidthMeter;
 use tun::MiWearTunDevice;
+
+const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[derive(Clone, Copy)]
+struct SessionAddress {
+    id: usize,
+    local: SocketAddr,
+    remote: SocketAddr,
+}
+
+struct ActiveSession {
+    protocol: &'static str,
+    address: SessionAddress,
+    counter: Arc<AtomicUsize>,
+}
+
+impl ActiveSession {
+    fn new(protocol: &'static str, address: SessionAddress, counter: Arc<AtomicUsize>) -> Self {
+        let SessionAddress { id, local, remote } = address;
+        let count = counter.fetch_add(1, Ordering::Relaxed) + 1;
+        log::info!(
+            "[NetworkRuntime] {protocol}#{id} established {local} -> {remote}, sessions={count}"
+        );
+        Self {
+            protocol,
+            address,
+            counter,
+        }
+    }
+}
+
+impl Drop for ActiveSession {
+    fn drop(&mut self) {
+        let protocol = self.protocol;
+        let SessionAddress { id, local, remote } = self.address;
+        let remaining = self.counter.fetch_sub(1, Ordering::Relaxed) - 1;
+        log::info!(
+            "[NetworkRuntime] {protocol}#{id} closed, sessions={remaining} ({local} -> {remote})"
+        );
+    }
+}
+
+// Schedule the dial as well as the relay: awaiting a dial in the accept loop
+// stalls all subsequent TCP, UDP and ICMP traffic from this watch.
+fn spawn_tcp_session<S, F>(
+    sessions: &mut JoinSet<()>,
+    mut tcp: S,
+    connect: F,
+    address: SessionAddress,
+    counter: Arc<AtomicUsize>,
+    connect_timeout: Duration,
+) where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    F: Future<Output = io::Result<TcpStream>> + Send + 'static,
+{
+    sessions.spawn(async move {
+        let SessionAddress { id, local, remote } = address;
+        let mut peer = match timeout(connect_timeout, connect).await {
+            Ok(Ok(peer)) => peer,
+            Ok(Err(err)) => {
+                log::warn!("[NetworkRuntime] TCP#{id} connect failed {local} -> {remote}: {err}");
+                return;
+            }
+            Err(_) => {
+                log::warn!(
+                    "[NetworkRuntime] TCP#{id} connect timed out after {}s ({local} -> {remote})",
+                    connect_timeout.as_secs()
+                );
+                return;
+            }
+        };
+        let _session = ActiveSession::new("TCP", address, counter);
+        if let Err(err) = io::copy_bidirectional(&mut tcp, &mut peer).await {
+            log::info!("[NetworkRuntime] TCP#{id} ended with error: {err} ({local} -> {remote})");
+        }
+        let _ = peer.shutdown().await;
+        let _ = tcp.shutdown().await;
+    });
+}
 
 #[derive(Clone, Copy, Debug, Default, serde::Serialize)]
 pub struct NetWorkSpeed {
@@ -290,6 +373,9 @@ impl NetworkRuntime {
                 async move {
                     let session_count = Arc::new(AtomicUsize::new(0));
                     let serial = Arc::new(AtomicUsize::new(0));
+                    // Dropping the stack task also aborts every pending dial and
+                    // active relay, so no sessions survive a device disconnect.
+                    let mut sessions = JoinSet::new();
                     let poll_sender = PollSender::new(send_tx_clone);
                     let tun_device = MiWearTunDevice {
                         rx: tun_rx,
@@ -312,64 +398,47 @@ impl NetworkRuntime {
                                     Ok(stream) => {
                                         let id = serial.fetch_add(1, Ordering::Relaxed);
                                         match stream {
-                                            IpStackStream::Tcp(mut tcp) => {
-                                                let mut peer = match TcpStream::connect(tcp.peer_addr()).await {
-                                                    Ok(stream) => stream,
-                                                    Err(err) => {
-                                                        log::warn!("[NetworkRuntime] TCP connect failed: {err}");
-                                                        continue;
-                                                    }
+                                            IpStackStream::Tcp(tcp) => {
+                                                let address = SessionAddress {
+                                                    id,
+                                                    local: tcp.local_addr(),
+                                                    remote: tcp.peer_addr(),
                                                 };
-                                                let count = session_count.fetch_add(1, Ordering::Relaxed) + 1;
-                                                log::info!("[NetworkRuntime] TCP#{id} established, sessions={count}");
-                                                let counter = session_count.clone();
-                                                crate::asyncrt::spawn(async move {
-                                                    if let Err(err) = io::copy_bidirectional(&mut tcp, &mut peer).await {
-                                                        log::info!("[NetworkRuntime] TCP#{id} ended with error: {err}");
-                                                    }
-                                                    let _ = peer.shutdown().await;
-                                                    let _ = tcp.shutdown().await;
-                                                    let remaining = counter.fetch_sub(1, Ordering::Relaxed) - 1;
-                                                    log::info!("[NetworkRuntime] TCP#{id} closed, sessions={remaining}");
-                                                });
+                                                spawn_tcp_session(
+                                                    &mut sessions,
+                                                    tcp,
+                                                    TcpStream::connect(address.remote),
+                                                    address,
+                                                    session_count.clone(),
+                                                    TCP_CONNECT_TIMEOUT,
+                                                );
                                             }
                                             IpStackStream::Udp(mut udp) => {
                                                 let local_addr = udp.local_addr();
                                                 let remote_addr = udp.peer_addr();
-                                                let mut peer = match UdpStream::connect(remote_addr).await {
-                                                    Ok(stream) => stream,
-                                                    Err(err) => {
-                                                        log::warn!("[NetworkRuntime] UDP connect failed {local_addr} -> {remote_addr}: {err}");
-                                                        continue;
-                                                    }
-                                                };
-                                                let count = session_count.fetch_add(1, Ordering::Relaxed) + 1;
-                                                log::info!(
-                                                    "[NetworkRuntime] UDP#{id} established {} -> {}, sessions={count}",
-                                                    local_addr,
-                                                    remote_addr
-                                                );
                                                 let counter = session_count.clone();
-                                                crate::asyncrt::spawn({
-                                                    let local_addr = local_addr;
-                                                    let remote_addr = remote_addr;
-                                                    async move {
-                                                        if let Err(err) = io::copy_bidirectional(&mut udp, &mut peer).await {
-                                                            log::info!(
-                                                                "[NetworkRuntime] UDP#{id} ended with error: {err} ({} -> {})",
-                                                                local_addr,
-                                                                remote_addr
-                                                            );
+                                                sessions.spawn(async move {
+                                                    let mut peer = match UdpStream::connect(remote_addr).await {
+                                                        Ok(stream) => stream,
+                                                        Err(err) => {
+                                                            log::warn!("[NetworkRuntime] UDP#{id} connect failed {local_addr} -> {remote_addr}: {err}");
+                                                            return;
                                                         }
-                                                        peer.shutdown();
-                                                        let _ = udp.shutdown().await;
-                                                        let remaining = counter.fetch_sub(1, Ordering::Relaxed) - 1;
+                                                    };
+                                                    let _session = ActiveSession::new(
+                                                        "UDP",
+                                                        SessionAddress { id, local: local_addr, remote: remote_addr },
+                                                        counter,
+                                                    );
+                                                    if let Err(err) = io::copy_bidirectional(&mut udp, &mut peer).await {
                                                         log::info!(
-                                                            "[NetworkRuntime] UDP#{id} closed, sessions={remaining} ({} -> {})",
+                                                            "[NetworkRuntime] UDP#{id} ended with error: {err} ({} -> {})",
                                                             local_addr,
                                                             remote_addr
                                                         );
                                                     }
+                                                    peer.shutdown();
+                                                    let _ = udp.shutdown().await;
                                                 });
                                             }
                                             IpStackStream::UnknownTransport(pkt) => {
@@ -418,11 +487,14 @@ impl NetworkRuntime {
                                     }
                                 }
                             }
-                            changed = shutdown.changed() => {
-                                if changed.is_ok() {
-                                    log::info!("[NetworkRuntime] shutting down network stack for {}", owner_clone);
-                                    break;
+                            result = sessions.join_next(), if !sessions.is_empty() => {
+                                if let Some(Err(err)) = result {
+                                    log::warn!("[NetworkRuntime] session task failed: {err}");
                                 }
+                            }
+                            _ = shutdown.changed() => {
+                                log::info!("[NetworkRuntime] shutting down network stack for {}", owner_clone);
+                                break;
                             }
                         }
                     }
@@ -519,5 +591,211 @@ fn prepare_capture_writer(owner: &str, config: &NetworkConfig) -> Option<PcapWri
             );
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::future::{pending, ready};
+    use tokio::{io::AsyncReadExt, net::TcpListener, sync::oneshot};
+
+    const TEST_DEADLINE: Duration = Duration::from_secs(2);
+
+    fn address(id: usize, remote: SocketAddr) -> SessionAddress {
+        SessionAddress {
+            id,
+            local: "10.1.10.2:20968".parse().unwrap(),
+            remote,
+        }
+    }
+
+    #[tokio::test]
+    async fn stalled_connect_does_not_block_another_tcp_session() {
+        let mut sessions = JoinSet::new();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let (_slow_watch, slow_tcp) = io::duplex(64);
+        let (started, wait_started) = oneshot::channel();
+        spawn_tcp_session(
+            &mut sessions,
+            slow_tcp,
+            async move {
+                let _ = started.send(());
+                pending().await
+            },
+            address(0, "127.0.0.1:1".parse().unwrap()),
+            counter.clone(),
+            TCP_CONNECT_TIMEOUT,
+        );
+        timeout(TEST_DEADLINE, wait_started).await.unwrap().unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let remote = listener.local_addr().unwrap();
+        let (mut watch, tcp) = io::duplex(64);
+        spawn_tcp_session(
+            &mut sessions,
+            tcp,
+            TcpStream::connect(remote),
+            address(1, remote),
+            counter.clone(),
+            TCP_CONNECT_TIMEOUT,
+        );
+        timeout(TEST_DEADLINE, async {
+            let server = async {
+                let (mut peer, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4];
+                peer.read_exact(&mut request).await.unwrap();
+                assert_eq!(&request, b"ping");
+                peer.write_all(b"pong").await.unwrap();
+                peer.shutdown().await.unwrap();
+            };
+            let client = async {
+                watch.write_all(b"ping").await.unwrap();
+                watch.shutdown().await.unwrap();
+                let mut response = Vec::new();
+                watch.read_to_end(&mut response).await.unwrap();
+                assert_eq!(&response, b"pong");
+            };
+            tokio::join!(server, client);
+            sessions.join_next().await.unwrap().unwrap();
+        })
+        .await
+        .expect("a stalled dial must not delay another session");
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+        assert_eq!(sessions.len(), 1, "the slow dial should still be pending");
+        sessions.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn connect_timeout_closes_watch_stream_without_counting_a_session() {
+        let mut sessions = JoinSet::new();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let (mut watch, tcp) = io::duplex(64);
+        spawn_tcp_session(
+            &mut sessions,
+            tcp,
+            pending(),
+            address(0, "127.0.0.1:1".parse().unwrap()),
+            counter.clone(),
+            Duration::from_millis(20),
+        );
+        timeout(TEST_DEADLINE, sessions.join_next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let mut buf = [0; 1];
+        assert_eq!(
+            timeout(TEST_DEADLINE, watch.read(&mut buf))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn failed_connect_closes_watch_stream_without_counting_a_session() {
+        let mut sessions = JoinSet::new();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let (mut watch, tcp) = io::duplex(64);
+        spawn_tcp_session(
+            &mut sessions,
+            tcp,
+            ready(Err(io::Error::from(std::io::ErrorKind::ConnectionRefused))),
+            address(0, "127.0.0.1:1".parse().unwrap()),
+            counter.clone(),
+            TCP_CONNECT_TIMEOUT,
+        );
+        timeout(TEST_DEADLINE, sessions.join_next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let mut buf = [0; 1];
+        assert_eq!(
+            timeout(TEST_DEADLINE, watch.read(&mut buf))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn dropping_sessions_cancels_pending_connect() {
+        let mut sessions = JoinSet::new();
+        let (mut watch, tcp) = io::duplex(64);
+        let (started, wait_started) = oneshot::channel();
+        spawn_tcp_session(
+            &mut sessions,
+            tcp,
+            async move {
+                let _ = started.send(());
+                pending().await
+            },
+            address(0, "127.0.0.1:1".parse().unwrap()),
+            Arc::new(AtomicUsize::new(0)),
+            TCP_CONNECT_TIMEOUT,
+        );
+        timeout(TEST_DEADLINE, wait_started).await.unwrap().unwrap();
+        drop(sessions);
+        let mut buf = [0; 1];
+        assert_eq!(
+            timeout(TEST_DEADLINE, watch.read(&mut buf))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn dropping_sessions_closes_active_relay_and_releases_session_count() {
+        let mut sessions = JoinSet::new();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let remote = listener.local_addr().unwrap();
+        let (mut watch, tcp) = io::duplex(64);
+        spawn_tcp_session(
+            &mut sessions,
+            tcp,
+            TcpStream::connect(remote),
+            address(0, remote),
+            counter.clone(),
+            TCP_CONNECT_TIMEOUT,
+        );
+        let (mut peer, _) = timeout(TEST_DEADLINE, listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        watch.write_all(b"ping").await.unwrap();
+        let mut request = [0; 4];
+        timeout(TEST_DEADLINE, peer.read_exact(&mut request))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&request, b"ping");
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+
+        drop(sessions);
+        let mut buf = [0; 1];
+        assert_eq!(
+            timeout(TEST_DEADLINE, watch.read(&mut buf))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            timeout(TEST_DEADLINE, peer.read(&mut buf))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
     }
 }

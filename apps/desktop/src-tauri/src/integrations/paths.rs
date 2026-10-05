@@ -26,6 +26,7 @@ pub(crate) struct ConfigPaths {
     pub claude_code: PathBuf,
     pub claude_mcp: PathBuf,
     pub claude_desktop: Option<PathBuf>,
+    pub kimi: PathBuf,
     pub platform: Platform,
 }
 
@@ -54,6 +55,15 @@ impl ConfigPaths {
         }
         .context("无法确定当前用户目录")?;
         let codex = get("CODEX_HOME").unwrap_or_else(|| home.join(".codex"));
+        let kimi = get("KIMI_CODE_HOME").unwrap_or_else(|| {
+            let current = home.join(".kimi-code");
+            let legacy = home.join(".kimi");
+            if !current.exists() && legacy.exists() {
+                legacy
+            } else {
+                current
+            }
+        });
         let claude_override = get("CLAUDE_CONFIG_DIR");
         let claude_code = claude_override
             .clone()
@@ -107,6 +117,7 @@ impl ConfigPaths {
             claude_code,
             claude_mcp,
             claude_desktop,
+            kimi,
             platform,
         })
     }
@@ -160,7 +171,12 @@ mod tests {
                 ("USERPROFILE", "C:/Users/Test"),
                 ("CODEX_HOME", "D:/Codex Work"),
                 ("CLAUDE_CONFIG_DIR", "D:/Claude Work"),
+                ("KIMI_CODE_HOME", "D:/Kimi Work"),
             ],
+        );
+        assert_eq!(
+            result.kimi.join("mcp.json"),
+            PathBuf::from("D:/Kimi Work").join("mcp.json")
         );
         assert_eq!(
             result.codex.join("hooks.json"),
