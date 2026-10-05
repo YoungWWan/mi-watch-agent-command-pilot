@@ -1,13 +1,18 @@
 use super::{
     configurator::{backup_config, get_binary_path},
     paths::{ConfigPaths, Platform},
-    permission_rules::write_private,
+    permission_rules::write_text_private,
 };
 use anyhow::{Context, Result};
 use base64::Engine;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use toml_edit::{value, ArrayOfTables, DocumentMut, Item, Table};
+
+const ANTIGRAVITY_HOOK: &str = "redmi_watch_hooks";
+const ANTIGRAVITY_MATCHER: &str =
+    "^(run_command|manage_task|write_to_file|replace_file_content|multi_replace_file_content)$";
 
 #[derive(Serialize)]
 pub struct HookStatus {
@@ -15,6 +20,8 @@ pub struct HookStatus {
     name: String,
     configured: bool,
     approval_installed: bool,
+    approval_supported: bool,
+    attention_installed: bool,
     completion_installed: bool,
     needs_repair: bool,
     message: String,
@@ -30,6 +37,13 @@ fn configs(paths: &ConfigPaths) -> Vec<(&'static str, &'static str, PathBuf)> {
             paths.claude_code.join("settings.json"),
         ),
         ("cursor", "Cursor", paths.home.join(".cursor/hooks.json")),
+        ("kimi_code", "Kimi Code", paths.kimi.join("config.toml")),
+        ("zcode", "ZCode", paths.home.join(".zcode/cli/config.json")),
+        (
+            "antigravity",
+            "Antigravity",
+            paths.home.join(".gemini/config/hooks.json"),
+        ),
     ]
 }
 
@@ -38,7 +52,59 @@ fn read_config(path: &Path) -> Result<Value> {
         return Ok(json!({}));
     }
     let text = std::fs::read_to_string(path)?;
-    Ok(serde_json::from_str(text.trim_start_matches('\u{feff}'))?)
+    if path
+        .extension()
+        .is_some_and(|extension| extension == "toml")
+    {
+        Ok(toml_edit::de::from_str(
+            text.trim_start_matches('\u{feff}'),
+        )?)
+    } else {
+        Ok(serde_json::from_str(text.trim_start_matches('\u{feff}'))?)
+    }
+}
+
+fn normalized(config: &Value, key: &str) -> Value {
+    match key {
+        "zcode" => json!({"hooks": config["hooks"]["events"]}),
+        "antigravity" => json!({"hooks": config[ANTIGRAVITY_HOOK]}),
+        "kimi_code" => {
+            let mut events = serde_json::Map::new();
+            for hook in config["hooks"].as_array().into_iter().flatten() {
+                if let Some(event) = hook["event"].as_str() {
+                    events
+                        .entry(event)
+                        .or_insert(json!([]))
+                        .as_array_mut()
+                        .unwrap()
+                        .push(hook.clone());
+                }
+            }
+            json!({"hooks": events})
+        }
+        _ => config.clone(),
+    }
+}
+
+fn events(key: &str) -> [(&'static str, &'static str, u64, bool); 2] {
+    match key {
+        "cursor" => [
+            ("beforeShellExecution", "permission", 70, true),
+            ("stop", "stop", 5, true),
+        ],
+        "kimi_code" => [
+            ("PermissionRequest", "permission", 5, true),
+            ("Stop", "stop", 15, true),
+        ],
+        "antigravity" => [
+            ("PreToolUse", "permission", 70, false),
+            ("Stop", "stop", 5, true),
+        ],
+        _ => [
+            ("PermissionRequest", "permission", 70, false),
+            ("Stop", "stop", 5, false),
+        ],
+    }
 }
 
 fn decoded_windows_command(command: &str) -> Option<String> {
@@ -129,6 +195,9 @@ fn handler(
     binary: &str,
     platform: Platform,
 ) -> Value {
+    if key == "zcode" {
+        return json!({"type":"process", "command":binary, "args":["--hook",mode,"--app",name], "timeoutMs":timeout * 1000, "enabled":true});
+    }
     if key == "claude_code" && platform == Platform::Windows {
         // Claude Code's exec form bypasses both Git Bash and PowerShell quoting.
         return json!({"type":"command", "command":binary, "args":["--hook",mode,"--app",name], "timeout":timeout});
@@ -144,6 +213,9 @@ fn handler(
         )
     };
     let mut result = json!({"type":"command", "command":command, "timeout":timeout});
+    if key == "kimi_code" {
+        result.as_object_mut().unwrap().remove("type");
+    }
     if key == "codex" && platform == Platform::Windows {
         result["commandWindows"] = result["command"].clone();
     }
@@ -165,9 +237,17 @@ fn event_handlers<'a>(config: &'a Value, event: &str, flat: bool) -> Vec<&'a Val
 
 fn installed(config: &Value, event: &str, flat: bool, expected: &Value) -> bool {
     event_handlers(config, event, flat).iter().any(|entry| {
-        ["type", "command", "args", "commandWindows", "shell"]
+        ["type", "command", "args", "commandWindows", "shell", "timeout", "timeoutMs"]
             .iter()
             .all(|key| entry[*key] == expected[*key])
+            && entry["enabled"] != false
+            // A filtered handler does not cover the event as configured by us.
+            && (flat || config["hooks"][event].as_array().is_some_and(|entries| entries.iter().any(|group| {
+                let matcher = group["matcher"].as_str().unwrap_or("");
+                (matcher.is_empty() || matcher == "*" || (event == "PreToolUse" && matcher == ANTIGRAVITY_MATCHER))
+                    && group["hooks"].as_array().is_some_and(|handlers| handlers.iter().any(|handler| handler == *entry))
+            })))
+            && (!flat || entry["matcher"].as_str().is_none_or(|matcher| matcher.is_empty() || matcher == ".*" || matcher == "*"))
     })
 }
 
@@ -179,31 +259,52 @@ fn status(
     binary: &Path,
     platform: Platform,
 ) -> HookStatus {
-    let flat = key == "cursor";
-    let approval_event = if flat {
-        "beforeShellExecution"
-    } else {
-        "PermissionRequest"
+    let [(approval_event, approval_mode, approval_timeout, approval_flat), (completion_event, _, completion_timeout, completion_flat)] =
+        events(key);
+    let enabled = match key {
+        "zcode" => config["hooks"]["enabled"] == true,
+        "antigravity" => config[ANTIGRAVITY_HOOK]["enabled"] != false,
+        _ => true,
     };
-    let completion_event = if flat { "stop" } else { "Stop" };
+    let config = normalized(config, key);
     let binary_text = binary.to_string_lossy();
-    let approval = binary.is_file()
+    let approval = enabled
+        && binary.is_file()
         && installed(
-            config,
+            &config,
             approval_event,
-            flat,
-            &handler(key, name, "permission", 70, &binary_text, platform),
+            approval_flat,
+            &handler(
+                key,
+                name,
+                approval_mode,
+                approval_timeout,
+                &binary_text,
+                platform,
+            ),
         );
-    let completion = binary.is_file()
+    let completion = enabled
+        && binary.is_file()
         && installed(
-            config,
+            &config,
             completion_event,
-            flat,
-            &handler(key, name, "stop", 5, &binary_text, platform),
+            completion_flat,
+            &handler(
+                key,
+                name,
+                "stop",
+                completion_timeout,
+                &binary_text,
+                platform,
+            ),
         );
-    let configured = approval && completion;
-    let has_owned = [approval_event, completion_event].iter().any(|event| {
-        event_handlers(config, event, flat)
+    let kimi_auth = key != "kimi_code"
+        || path
+            .parent()
+            .is_some_and(|home| super::kimi::read_token(home).is_ok());
+    let configured = approval && completion && kimi_auth;
+    let has_owned = events(key).iter().any(|(event, _, _, flat)| {
+        event_handlers(&config, event, *flat)
             .iter()
             .any(|entry| owned(entry))
     });
@@ -212,11 +313,19 @@ fn status(
         key: key.into(),
         name: name.into(),
         configured,
-        approval_installed: approval,
-        completion_installed: completion,
+        approval_installed: approval && kimi_auth,
+        approval_supported: true,
+        attention_installed: false,
+        completion_installed: completion && kimi_auth,
         needs_repair,
-        message: if needs_repair {
-            "旧版钩子或应用路径已变化，点击修复后使用当前应用。"
+        message: if key == "kimi_code" && has_owned && !kimi_auth {
+            "Kimi 本地认证尚未配置或文件权限无效，请点击修复；已有认证文件会保留。"
+        } else if needs_repair {
+            "钩子路径、启用状态或参数需要更新，请点击修复。"
+        } else if key == "kimi_code" {
+            "支持允许一次、拒绝及完成回复；启用后请重启 Kimi Code，并保持指令服务运行。超时仍在电脑审批。"
+        } else if key == "antigravity" {
+            "通过 PreToolUse 审批终端执行、后台任务控制和文件写入；需要支持生命周期钩子的 Antigravity 版本。"
         } else if configured {
             "已配置应用内置钩子。"
         } else {
@@ -240,6 +349,8 @@ pub fn statuses() -> Result<Vec<HookStatus>> {
                     name: name.into(),
                     configured: false,
                     approval_installed: false,
+                    approval_supported: true,
+                    attention_installed: false,
                     completion_installed: false,
                     needs_repair: false,
                     message: format!("{error}；原文件已保留。"),
@@ -258,6 +369,63 @@ fn update(
     binary: &str,
     platform: Platform,
 ) -> Result<()> {
+    if key == "zcode" || key == "antigravity" {
+        config.as_object().context("钩子配置必须是 JSON 对象")?;
+        let mut inner = normalized(config, key);
+        if inner["hooks"].is_null() {
+            inner = json!({"hooks":{}});
+        }
+        update_events(&mut inner, key, name, enable, binary, platform)?;
+        if key == "zcode" {
+            let root = config.as_object_mut().unwrap();
+            let hooks = root
+                .entry("hooks")
+                .or_insert(json!({}))
+                .as_object_mut()
+                .context("hooks 必须是对象")?;
+            hooks.insert("events".into(), inner["hooks"].clone());
+            if enable {
+                hooks.insert("enabled".into(), json!(true));
+            }
+        } else {
+            let mut definition = config_definition(config, enable)?;
+            let root = config.as_object_mut().unwrap();
+            definition.insert("PreToolUse".into(), inner["hooks"]["PreToolUse"].clone());
+            definition.insert("Stop".into(), inner["hooks"]["Stop"].clone());
+            definition.retain(|_, value| !value.is_null());
+            if enable || definition.keys().any(|key| key != "enabled") {
+                root.insert(ANTIGRAVITY_HOOK.into(), Value::Object(definition));
+            } else {
+                root.remove(ANTIGRAVITY_HOOK);
+            }
+        }
+        return Ok(());
+    }
+    update_events(config, key, name, enable, binary, platform)
+}
+
+fn config_definition(config: &Value, enable: bool) -> Result<serde_json::Map<String, Value>> {
+    let mut definition = match config.get(ANTIGRAVITY_HOOK) {
+        Some(value) => value
+            .as_object()
+            .context("Antigravity 钩子必须是对象")?
+            .clone(),
+        None => serde_json::Map::new(),
+    };
+    if enable {
+        definition.insert("enabled".into(), json!(true));
+    }
+    Ok(definition)
+}
+
+fn update_events(
+    config: &mut Value,
+    key: &str,
+    name: &str,
+    enable: bool,
+    binary: &str,
+    platform: Platform,
+) -> Result<()> {
     let flat = key == "cursor";
     let root = config.as_object_mut().context("钩子配置必须是 JSON 对象")?;
     if flat {
@@ -268,14 +436,7 @@ fn update(
         .or_insert(json!({}))
         .as_object_mut()
         .context("hooks 必须是对象")?;
-    for (event, mode, timeout) in if flat {
-        [
-            ("beforeShellExecution", "permission", 70),
-            ("stop", "stop", 5),
-        ]
-    } else {
-        [("PermissionRequest", "permission", 70), ("Stop", "stop", 5)]
-    } {
+    for (event, mode, timeout, flat) in events(key) {
         let entries = hooks
             .entry(event)
             .or_insert(json!([]))
@@ -300,7 +461,11 @@ fn update(
             entries.push(if flat {
                 handler
             } else {
-                json!({"hooks":[handler]})
+                if key == "antigravity" {
+                    json!({"matcher":ANTIGRAVITY_MATCHER, "hooks":[handler]})
+                } else {
+                    json!({"hooks":[handler]})
+                }
             });
         }
         if entries.is_empty() {
@@ -310,6 +475,53 @@ fn update(
     Ok(())
 }
 
+fn update_kimi(content: &str, enable: bool, binary: &str, platform: Platform) -> Result<String> {
+    let mut document = content
+        .trim_start_matches('\u{feff}')
+        .parse::<DocumentMut>()
+        .context("Kimi 配置不是有效 TOML，已保留原文件")?;
+    if document.get("hooks").is_none() {
+        if !enable {
+            return Ok(content.into());
+        }
+        document["hooks"] = Item::ArrayOfTables(ArrayOfTables::new());
+    }
+    if let Some(array) = document["hooks"].as_array() {
+        let mut tables = ArrayOfTables::new();
+        for entry in array.iter() {
+            tables.push(
+                entry
+                    .as_inline_table()
+                    .context("Kimi hooks 条目必须是对象")?
+                    .clone()
+                    .into_table(),
+            );
+        }
+        document["hooks"] = Item::ArrayOfTables(tables);
+    }
+    let hooks = document["hooks"]
+        .as_array_of_tables_mut()
+        .context("Kimi hooks 必须是 [[hooks]] 数组")?;
+    hooks.retain(|table| {
+        let hook: Value = toml_edit::de::from_str(&table.to_string()).unwrap_or(json!({}));
+        !owned(&hook)
+    });
+    if enable {
+        for (event, mode, timeout, _) in events("kimi_code") {
+            let handler = handler("kimi_code", "Kimi Code", mode, timeout, binary, platform);
+            let mut table = Table::new();
+            table["event"] = value(event);
+            table["command"] = value(handler["command"].as_str().unwrap());
+            table["timeout"] = value(timeout as i64);
+            hooks.push(table);
+        }
+    }
+    if hooks.is_empty() {
+        document.remove("hooks");
+    }
+    Ok(document.to_string())
+}
+
 pub fn toggle(key: &str, enable: bool) -> Result<()> {
     let paths = ConfigPaths::current()?;
     let (_, name, path) = configs(&paths)
@@ -317,6 +529,27 @@ pub fn toggle(key: &str, enable: bool) -> Result<()> {
         .find(|(candidate, _, _)| *candidate == key)
         .context("不支持此 Agent 的钩子")?;
     if !enable && !path.exists() {
+        return Ok(());
+    }
+    if key == "kimi_code" {
+        let content = if path.exists() {
+            std::fs::read_to_string(&path)?
+        } else {
+            String::new()
+        };
+        let updated = update_kimi(
+            &content,
+            enable,
+            &get_binary_path().to_string_lossy(),
+            paths.platform,
+        )?;
+        if enable {
+            super::kimi::ensure_token(&paths.kimi)?;
+        }
+        if updated != content {
+            backup_config(&path)?;
+            write_text_private(&path, &updated)?;
+        }
         return Ok(());
     }
     let mut config = read_config(&path)?;
@@ -331,7 +564,7 @@ pub fn toggle(key: &str, enable: bool) -> Result<()> {
     )?;
     if config != previous {
         backup_config(&path)?;
-        write_private(&path, &config)?;
+        write_text_private(&path, &(serde_json::to_string_pretty(&config)? + "\n"))?;
     }
     Ok(())
 }
@@ -339,6 +572,140 @@ pub fn toggle(key: &str, enable: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zcode_and_antigravity_use_native_schemas_and_preserve_foreign_hooks() {
+        let root =
+            std::env::temp_dir().join(format!("pilot-hook-new-{:016x}", rand::random::<u64>()));
+        std::fs::create_dir_all(&root).unwrap();
+        let binary = root.join("agent-command-pilot.exe");
+        std::fs::write(&binary, "fixture").unwrap();
+        for platform in [Platform::MacOs, Platform::Windows] {
+            for (key, name, original) in [
+                (
+                    "zcode",
+                    "ZCode",
+                    json!({"mcp":{"servers":{"other":{"command":"other"}}},"hooks":{"enabled":false,"events":{"Stop":[{"hooks":[{"type":"process","command":"other"}]}]}}}),
+                ),
+                (
+                    "antigravity",
+                    "Antigravity",
+                    json!({"other-hook":{"Stop":[{"command":"other"}]}}),
+                ),
+            ] {
+                let mut config = original.clone();
+                update(
+                    &mut config,
+                    key,
+                    name,
+                    true,
+                    binary.to_str().unwrap(),
+                    platform,
+                )
+                .unwrap();
+                let first = config.clone();
+                assert!(status(key, name, &binary, &config, &binary, platform).configured);
+                update(
+                    &mut config,
+                    key,
+                    name,
+                    true,
+                    binary.to_str().unwrap(),
+                    platform,
+                )
+                .unwrap();
+                assert_eq!(first, config);
+                if key == "zcode" {
+                    let handler = &config["hooks"]["events"]["PermissionRequest"][0]["hooks"][0];
+                    assert_eq!(handler["type"], "process");
+                    assert_eq!(handler["timeoutMs"], 70_000);
+                    assert_eq!(
+                        handler["args"],
+                        json!(["--hook", "permission", "--app", "ZCode"])
+                    );
+                    assert_eq!(config["mcp"], original["mcp"]);
+                    config["hooks"]["enabled"] = json!(false);
+                } else {
+                    assert!(config[ANTIGRAVITY_HOOK]["Stop"][0].get("command").is_some());
+                    assert_eq!(
+                        config[ANTIGRAVITY_HOOK]["PreToolUse"][0]["matcher"],
+                        ANTIGRAVITY_MATCHER
+                    );
+                    assert_eq!(config["other-hook"], original["other-hook"]);
+                    config[ANTIGRAVITY_HOOK]["enabled"] = json!(false);
+                }
+                assert!(status(key, name, &binary, &config, &binary, platform).needs_repair);
+                update(
+                    &mut config,
+                    key,
+                    name,
+                    false,
+                    binary.to_str().unwrap(),
+                    platform,
+                )
+                .unwrap();
+                assert!(!status(key, name, &binary, &config, &binary, platform).configured);
+                assert!(config.to_string().contains("other"));
+                if key == "zcode" {
+                    assert_eq!(config["mcp"], original["mcp"]);
+                } else {
+                    assert_eq!(config, original);
+                }
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn kimi_toml_preserves_models_comments_and_foreign_hooks_and_requires_private_auth() {
+        let root =
+            std::env::temp_dir().join(format!("pilot-hook-kimi-{:016x}", rand::random::<u64>()));
+        std::fs::create_dir_all(&root).unwrap();
+        let binary = root.join("agent-command-pilot");
+        std::fs::write(&binary, "fixture").unwrap();
+        super::super::kimi::ensure_token(&root).unwrap();
+        for platform in [Platform::MacOs, Platform::Windows] {
+            let original = "# preserve config\ndefault_model = 'kimi'\n[[hooks]]\nevent = 'Stop'\ncommand = 'other-hook'\n[models.kimi]\nmodel = 'kimi-k2'\n";
+            let updated = update_kimi(original, true, binary.to_str().unwrap(), platform).unwrap();
+            assert!(updated.contains("# preserve config"));
+            assert_eq!(
+                update_kimi(&updated, true, binary.to_str().unwrap(), platform).unwrap(),
+                updated
+            );
+            let parsed: Value = toml_edit::de::from_str(&updated).unwrap();
+            let status = status(
+                "kimi_code",
+                "Kimi Code",
+                &binary,
+                &parsed,
+                &binary,
+                platform,
+            );
+            assert!(status.configured && status.approval_installed && status.completion_installed);
+            assert!(status.approval_supported && !status.attention_installed);
+            for hook in parsed["hooks"].as_array().unwrap().iter().skip(1) {
+                assert!(hook
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .all(|key| ["event", "command", "timeout"].contains(&key.as_str())));
+            }
+            let removed: Value = toml_edit::de::from_str(
+                &update_kimi(&updated, false, binary.to_str().unwrap(), platform).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(removed, toml_edit::de::from_str::<Value>(original).unwrap());
+            assert!(update_kimi("hooks = []\n", true, binary.to_str().unwrap(), platform).is_ok());
+            assert!(update_kimi(
+                "hooks = 'invalid'\n",
+                true,
+                binary.to_str().unwrap(),
+                platform
+            )
+            .is_err());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn migration_preserves_other_handlers_and_is_idempotent_on_both_platforms() {

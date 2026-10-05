@@ -6,6 +6,7 @@ import { CommandCenter } from "./CommandCenter";
 import { useDesktopUpdates, DesktopUpdateNotice, DesktopUpdatePanel } from "./DesktopUpdates";
 import { updateIsBusy } from "./desktopUpdateModel";
 import { IntegrationManagement } from "./IntegrationManagement";
+import { IntegrationStatus } from "./IntegrationStatus";
 import { AgentTabs, type AgentSection } from "./AgentTabs";
 import { watchPairingState, type ServerInfo, type CommandItem } from "./commandModel";
 import {
@@ -129,6 +130,7 @@ export default function App() {
     device_count: 0,
   });
   const [cloudDevices, setCloudDevices] = useState<XiaomiDevice[]>([]);
+  const [cloudDevicesError, setCloudDevicesError] = useState("");
   const [isLoadingAccount, setIsLoadingAccount] = useState(true);
   const [isSyncingCloud, setIsSyncingCloud] = useState<boolean>(false);
   const [showQrModal, setShowQrModal] = useState<boolean>(false);
@@ -352,6 +354,7 @@ export default function App() {
   };
 
   const loadXiaomiAccount = async () => {
+    setCloudDevicesError("");
     try {
       const status = await invoke<XiaomiStatus>("account_xiaomi_get_status");
       setXiaomiStatus(status);
@@ -373,6 +376,7 @@ export default function App() {
           }
         } catch (fetchErr) {
           console.warn("[Xiaomi] Devices fetch failed:", fetchErr);
+          setCloudDevicesError(String(fetchErr));
           const updated = await invoke<XiaomiStatus>(
             "account_xiaomi_get_status",
           );
@@ -382,6 +386,7 @@ export default function App() {
       }
     } catch (e) {
       console.error("[Xiaomi] Load status error:", e);
+      setCloudDevicesError(String(e));
     } finally {
       setIsLoadingAccount(false);
     }
@@ -429,6 +434,7 @@ export default function App() {
         });
         if (res.status === "success") {
           setQrPollingStatus("登录成功，正在同步设备…");
+          setCloudDevicesError("");
           setXiaomiStatus({
             logged_in: true,
             user_id: res.user_id,
@@ -473,6 +479,7 @@ export default function App() {
   const handleSyncCloudDevices = async () => {
     try {
       setIsSyncingCloud(true);
+      setCloudDevicesError("");
       const devs = await invoke<XiaomiDevice[]>("account_xiaomi_get_devices");
       setCloudDevices(devs);
       setXiaomiStatus((prev) => ({ ...prev, device_count: devs.length }));
@@ -487,12 +494,12 @@ export default function App() {
       }
     } catch (e: any) {
       setIsSyncingCloud(false);
+      setCloudDevicesError(String(e));
       const updated = await invoke<XiaomiStatus>("account_xiaomi_get_status");
       setXiaomiStatus(updated);
       if (!updated.logged_in) {
         setCloudDevices([]);
       }
-      alert(`同步云端设备失败: ${e}`);
     }
   };
 
@@ -504,6 +511,7 @@ export default function App() {
       resetDeviceConnection();
       setXiaomiStatus({ logged_in: false, device_count: 0 });
       setCloudDevices([]);
+      setCloudDevicesError("");
       setMac("");
       setQrSession(null);
       setIsQrPolling(false);
@@ -526,6 +534,7 @@ export default function App() {
     } else if (res.status === "success") {
       setPwdVerification(null);
       setPwdPassword("");
+      setCloudDevicesError("");
       setXiaomiStatus({
         logged_in: true,
         user_id: res.user_id,
@@ -658,6 +667,17 @@ export default function App() {
       if (epoch !== connectionEpoch.current) return;
       setConnectionStatus("error");
       setConnectionError(`连接失败: ${err}`);
+      try {
+        const updated = await invoke<XiaomiStatus>("account_xiaomi_get_status");
+        if (epoch !== connectionEpoch.current) return;
+        setXiaomiStatus(updated);
+        if (!updated.logged_in) {
+          setCloudDevices([]);
+          setCloudDevicesError(String(err));
+        }
+      } catch (statusError) {
+        console.error("[Xiaomi] Load status error:", statusError);
+      }
     }
   };
 
@@ -1020,6 +1040,11 @@ export default function App() {
 
           {activeTab === "device" && (
             <section className="device-workbench" aria-label="设备管理">
+              {cloudDevicesError && (
+                <p className="inline-error" role="alert">
+                  {cloudDevicesError}
+                </p>
+              )}
               {xiaomiStatus.logged_in && cloudDevices.length > 0 ? (
                 <>
                   <div
@@ -1157,6 +1182,10 @@ export default function App() {
                   <h2>
                     {isLoadingDevices
                       ? "正在同步设备…"
+                      : cloudDevicesError
+                        ? xiaomiStatus.logged_in
+                          ? "设备同步失败"
+                          : "请重新登录小米账号"
                       : xiaomiStatus.logged_in
                         ? "还没有发现设备"
                         : "从你的手表开始"}
@@ -1164,6 +1193,10 @@ export default function App() {
                   <p>
                     {isLoadingDevices
                       ? "稍等片刻，正在读取设备列表。"
+                      : cloudDevicesError
+                        ? xiaomiStatus.logged_in
+                          ? "请检查网络后刷新设备。"
+                          : "重新扫码授权后即可同步设备。"
                       : xiaomiStatus.logged_in
                         ? "在小米运动健康中绑定设备，再刷新列表。"
                         : "登录小米账号，同步你的穿戴设备。"}
@@ -1338,16 +1371,15 @@ export default function App() {
                       <div className="agent-info">
                         <h3>{agent.name}</h3>
                         <div className="agent-state">
-                          <span
-                            className={`status-dot ${agent.configured ? "online" : agent.needs_repair ? "warning" : ""}`}
-                          />
-                          {agent.configured
-                            ? "已接入"
-                            : agent.needs_repair
-                              ? "需要修复"
-                              : agent.installed
-                              ? "可接入"
-                              : "未检测到安装"}
+                          <IntegrationStatus state={agent.configured ? "active" : agent.needs_repair ? "warning" : "inactive"}>
+                            {agent.configured
+                              ? "已接入"
+                              : agent.needs_repair
+                                ? "需要修复"
+                                : agent.installed
+                                  ? "未接入"
+                                  : "未检测到安装"}
+                          </IntegrationStatus>
                         </div>
                       </div>
                       <button
@@ -1371,7 +1403,7 @@ export default function App() {
                         />
                       </button>
                       <button
-                        className="secondary agent-action"
+                        className={`secondary agent-action ${agent.configured ? "" : agent.needs_repair ? "agent-action-repair" : "agent-action-enable"}`}
                         aria-label={`${agent.configured ? "停用" : agent.needs_repair ? "修复" : "接入"} ${agent.name}`}
                         onClick={() =>
                           handleToggleAgent(agent.key, agent.configured)

@@ -259,6 +259,8 @@ async fn get_hooks_config(
                 "name": st["name"],
                 "installed": st["configured"],
                 "approval_installed": st["approval_installed"],
+                "approval_supported": st["approval_supported"],
+                "attention_installed": st["attention_installed"],
                 "completion_installed": st["completion_installed"],
                 "path": st["config_path"]
             }),
@@ -288,6 +290,17 @@ async fn toggle_hook(
         Ok(()) => Ok(Json(serde_json::json!({ "status": "ok", "enabled": payload.enable }))),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
+}
+
+async fn kimi_hook(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    State(state): State<Arc<AppState>>,
+    Json(event): Json<crate::integrations::kimi::BridgeEvent>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if !is_loopback(&addr) { return Err(StatusCode::FORBIDDEN); }
+    if !event.valid() { return Err(StatusCode::BAD_REQUEST); }
+    super::kimi_bridge::enqueue(event, state.manager.clone());
+    Ok(Json(serde_json::json!({"status":"accepted"})))
 }
 
 async fn ws_events_handler(
@@ -327,6 +340,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/config/server-info", get(get_server_info))
         .route("/api/v1/config/hooks", get(get_hooks_config))
         .route("/api/v1/config/hooks/:agent", post(toggle_hook))
+        .route("/api/v1/integrations/kimi/hook", post(kimi_hook))
         .route("/ws/events", get(ws_events_handler))
         .with_state(state)
 }
@@ -340,6 +354,16 @@ mod tests {
         let code = pairing.generate_code();
         let token = pairing.pair_with_code(&code).unwrap();
         (Arc::new(AppState { manager: Arc::new(CommandManager::new()), pairing, server_port: 8000 }), token)
+    }
+
+    #[tokio::test]
+    async fn kimi_bridge_rejects_lan_requests_and_invalid_session_ids() {
+        use crate::integrations::kimi::BridgeEvent;
+        let (state,_)=paired_state();
+        let event=BridgeEvent::Completion {session_id:"session_test".into(),server_id:"server_test".into(),turn_id:1,cwd:String::new()};
+        assert_eq!(kimi_hook(ConnectInfo("192.168.1.20:5000".parse().unwrap()),State(state.clone()),Json(event)).await.err(),Some(StatusCode::FORBIDDEN));
+        let event=BridgeEvent::Completion {session_id:"../other".into(),server_id:"server_test".into(),turn_id:1,cwd:String::new()};
+        assert_eq!(kimi_hook(ConnectInfo("127.0.0.1:5000".parse().unwrap()),State(state),Json(event)).await.err(),Some(StatusCode::BAD_REQUEST));
     }
 
     #[tokio::test]

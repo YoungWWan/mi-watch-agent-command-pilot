@@ -28,6 +28,7 @@ pub struct AgentStatus {
 enum Format {
     Toml,
     Json,
+    Zcode,
 }
 
 struct AgentConfig {
@@ -71,6 +72,20 @@ fn configs(paths: &ConfigPaths) -> Vec<AgentConfig> {
             path: home.join(".cursor/mcp.json"),
             parent: home.join(".cursor"),
             format: Format::Json,
+        },
+        AgentConfig {
+            key: "kimi_code",
+            name: "Kimi Code",
+            path: paths.kimi.join("mcp.json"),
+            parent: paths.kimi.clone(),
+            format: Format::Json,
+        },
+        AgentConfig {
+            key: "zcode",
+            name: "ZCode",
+            path: home.join(".zcode/cli/config.json"),
+            parent: home.join(".zcode"),
+            format: Format::Zcode,
         },
         AgentConfig {
             key: "antigravity",
@@ -127,11 +142,21 @@ fn read_item(content: &str, format: Format) -> Result<Option<Value>> {
     let content = content.trim_start_matches('\u{feff}');
     let document: Value = match format {
         Format::Toml => toml_edit::de::from_str(content).context("MCP 配置不是有效 TOML")?,
-        Format::Json => serde_json::from_str(content).context("MCP 配置不是有效 JSON")?,
+        Format::Json | Format::Zcode => {
+            serde_json::from_str(content).context("MCP 配置不是有效 JSON")?
+        }
     };
-    let root = document.as_object().context("MCP 配置必须是对象")?;
+    let mut root = document.as_object().context("MCP 配置必须是对象")?;
+    if matches!(format, Format::Zcode) {
+        let Some(mcp) = root.get("mcp") else {
+            return Ok(None);
+        };
+        root = mcp.as_object().context("mcp 必须是对象")?;
+    }
     let section = if matches!(format, Format::Toml) {
         "mcp_servers"
+    } else if matches!(format, Format::Zcode) {
+        "servers"
     } else {
         "mcpServers"
     };
@@ -177,6 +202,12 @@ fn inspect_item(
     if item["args"] != json!(["--mcp"])
         || item["env"]["REDMI_WATCH_AGENT"] != name
         || item["enabled"] == false
+        || item["enable"] == false
+        || item["disabled"] == true
+        || (name == "Kimi Code" && item["toolTimeoutMs"].as_u64().unwrap_or(0) < 330_000)
+        || item["disabledTools"]
+            .as_array()
+            .is_some_and(|tools| tools.iter().any(|tool| tool == "ask_watch_question"))
     {
         return (
             false,
@@ -260,21 +291,52 @@ fn update_toml(content: &str, enable: bool, binary: &str, name: &str) -> Result<
 }
 
 fn update_json(content: &str, enable: bool, binary: &str, name: &str) -> Result<String> {
+    update_json_format(content, enable, binary, name, Format::Json)
+}
+
+fn update_json_format(
+    content: &str,
+    enable: bool,
+    binary: &str,
+    name: &str,
+    format: Format,
+) -> Result<String> {
     let mut document: Value = serde_json::from_str(content.trim_start_matches('\u{feff}'))
         .context("现有 MCP 配置不是有效 JSON，已保留原文件")?;
-    let root = document
+    let mut root = document
         .as_object_mut()
         .context("MCP 配置必须是 JSON 对象")?;
+    if matches!(format, Format::Zcode) {
+        if !enable && !root.contains_key("mcp") {
+            return Ok(content.into());
+        }
+        root = root
+            .entry("mcp")
+            .or_insert(json!({}))
+            .as_object_mut()
+            .context("mcp 必须是对象，已保留原文件")?;
+    }
+    let section = if matches!(format, Format::Zcode) {
+        "servers"
+    } else {
+        "mcpServers"
+    };
+    if !enable && !root.contains_key(section) {
+        return Ok(content.into());
+    }
     let servers = root
-        .entry("mcpServers")
+        .entry(section)
         .or_insert(json!({}))
         .as_object_mut()
         .context("mcpServers 必须是对象")?;
     if enable {
-        servers.insert(
-            SERVER_NAME.into(),
-            json!({"command": binary, "args": ["--mcp"], "env": {"REDMI_WATCH_AGENT": name}}),
-        );
+        let mut item =
+            json!({"command": binary, "args": ["--mcp"], "env": {"REDMI_WATCH_AGENT": name}});
+        if name == "Kimi Code" {
+            // A watch question may wait up to 300 seconds; Kimi defaults to 60.
+            item["toolTimeoutMs"] = json!(330_000);
+        }
+        servers.insert(SERVER_NAME.into(), item);
     } else {
         servers.remove(SERVER_NAME);
     }
@@ -325,6 +387,7 @@ fn toggle_config(config: &AgentConfig, enable: bool, binary: &Path) -> Result<bo
     let updated = match config.format {
         Format::Toml => update_toml(&content, enable, binary, config.name)?,
         Format::Json => update_json(&content, enable, binary, config.name)?,
+        Format::Zcode => update_json_format(&content, enable, binary, config.name, Format::Zcode)?,
     };
     if updated != content {
         backup_config(&config.path)?;
@@ -345,6 +408,61 @@ pub fn toggle_agent(key: &str, enable: bool) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zcode_mcp_changes_preserve_shared_hook_config_and_reject_invalid_sections() {
+        let original = r#"{"model":"glm","hooks":{"enabled":true,"events":{"Stop":[]}},"mcp":{"otherSetting":true,"servers":{"other":{"command":"other"}}}}"#;
+        let binary = r"C:\Program Files\指令助手\agent-command-pilot.exe";
+        let updated = update_json_format(original, true, binary, "ZCode", Format::Zcode).unwrap();
+        let parsed: Value = serde_json::from_str(&updated).unwrap();
+        assert_eq!(parsed["mcp"]["servers"][SERVER_NAME]["command"], binary);
+        assert!(parsed.get("mcpServers").is_none());
+        assert_eq!(parsed["hooks"]["enabled"], true);
+        assert_eq!(parsed["mcp"]["otherSetting"], true);
+        assert_eq!(
+            read_item(&updated, Format::Zcode).unwrap().unwrap()["env"]["REDMI_WATCH_AGENT"],
+            "ZCode"
+        );
+        assert_eq!(
+            update_json_format(&updated, true, binary, "ZCode", Format::Zcode).unwrap(),
+            updated
+        );
+        let removed: Value = serde_json::from_str(
+            &update_json_format(&updated, false, binary, "ZCode", Format::Zcode).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(removed["hooks"], parsed["hooks"]);
+        assert_eq!(removed["mcp"]["servers"]["other"]["command"], "other");
+        assert!(removed["mcp"]["servers"].get(SERVER_NAME).is_none());
+        assert!(update_json_format(r#"{"mcp":[]}"#, true, binary, "ZCode", Format::Zcode).is_err());
+        assert!(read_item(r#"{"mcp":{"servers":[]}}"#, Format::Zcode).is_err());
+    }
+
+    #[test]
+    fn kimi_questions_can_wait_for_the_full_watch_timeout_and_disabled_agents_need_repair() {
+        let root =
+            std::env::temp_dir().join(format!("pilot-mcp-new-{:016x}", rand::random::<u64>()));
+        fs::create_dir_all(&root).unwrap();
+        let binary = root.join("agent-command-pilot");
+        fs::write(&binary, "fixture").unwrap();
+        let updated = update_json("{}", true, binary.to_str().unwrap(), "Kimi Code").unwrap();
+        let item = read_item(&updated, Format::Json).unwrap().unwrap();
+        assert_eq!(item["toolTimeoutMs"], 330_000);
+        assert!(inspect_item(Some(&item), &binary, "Kimi Code", Platform::MacOs).0);
+        for (name, field) in [
+            ("Kimi Code", "enabled"),
+            ("ZCode", "enable"),
+            ("Antigravity", "disabled"),
+        ] {
+            let mut item = item.clone();
+            item["env"]["REDMI_WATCH_AGENT"] = json!(name);
+            item[field] = json!(field == "disabled");
+            let (configured, repair, _) = inspect_item(Some(&item), &binary, name, Platform::MacOs);
+            assert!(!configured);
+            assert!(repair);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn toml_windows_paths_round_trip_and_preserve_other_servers_and_comments() {

@@ -46,7 +46,9 @@
 | Claude Code | 支持 | 支持 |
 | Cursor | 支持 | 支持 |
 | Claude Desktop | 支持 | — |
-| Antigravity | 支持 | — |
+| Kimi Code | 支持 | 支持（官方本地 API） |
+| ZCode | 支持 | 支持 |
+| Antigravity | 支持 | 支持（需支持生命周期 Hooks 的版本） |
 | Windsurf | 支持 | — |
 
 选择题使用 MCP；工具权限审批使用 Agent 的原生审批钩子。接入后需要重新打开 Agent 会话，实际可用性取决于目标 Agent 是否已加载对应配置。
@@ -95,6 +97,8 @@
 2. 如需操作审批和完成提醒，在 **审批与完成通知** 标签中启用对应 Agent 的钩子。
 3. 重新打开 Agent 会话，确认已加载 `ask_watch_question` 工具。
 
+支持 Codex、Cursor、Claude Desktop / Code、Kimi Code、ZCode、Antigravity 和 Windsurf 的 MCP 接入。Kimi Code 通过官方本地 API 接收手表允许一次或拒绝，并在本轮结束后发送完整文字回复；ZCode 和 Antigravity 可通过原生钩子接收手表审批。版本与配置说明见 [Agent 接入说明](./docs/AGENT_INTEGRATIONS.md)。
+
 MCP 工具调用参数示例：
 
 ```json
@@ -139,6 +143,8 @@ flowchart LR
 | `agent-command-pilot --mcp` | 作为 stdio MCP 服务，向已运行的桌面服务发送选择题。 |
 | `agent-command-pilot --hook permission` | 处理原生权限审批请求。 |
 | `agent-command-pilot --hook stop` | 发送本轮任务完成提醒。 |
+| `agent-command-pilot --hook permission --app 'Kimi Code'` | 将 Kimi 原生审批事件交给桌面助手，通过官方 API 提交手表决定。 |
+| `agent-command-pilot --hook stop --app 'Kimi Code'` | 定位当前轮次，由桌面助手等待结束并发送最终文字回复。 |
 
 Windows 可执行文件名为 `agent-command-pilot.exe`。日常使用由桌面端自动生成接入配置，无需手动填写入口路径；MCP 与钩子运行期间需要保持桌面服务开启。
 
@@ -254,6 +260,7 @@ mi-watch-agent-command-pilot/
 - [手表应用安装与升级](./docs/WATCH_APP_INSTALLATION.md)
 - [Windows 配置与构建](./docs/WINDOWS.md)
 - [在线更新与发布](./docs/UPDATES.md)
+- [Agent 接入说明](./docs/AGENT_INTEGRATIONS.md)
 - [版本更新说明](./docs/RELEASE_NOTES.md)
 
 ## 贡献

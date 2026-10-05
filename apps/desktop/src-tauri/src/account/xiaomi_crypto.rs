@@ -1,6 +1,6 @@
 // Adapted from AstralSightStudios/AstroBox-Public src-tauri/src/auth.rs.
 // https://github.com/AstralSightStudios/AstroBox-Public (AGPL-3.0).
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use base64::{engine::general_purpose, Engine};
 use rand::{rngs::OsRng, Rng};
 use rc4::{cipher::StreamCipher, consts::U32, KeyInit, Rc4};
@@ -138,14 +138,10 @@ pub async fn mi_service_call_encrypted(
         .header("Cookie", cookie_header)
         .form(&params_enc)
         .send()
-        .await?;
+        .await?
+        .error_for_status()?;
 
-    let status = resp.status();
     let body = resp.text().await?;
-
-    if !status.is_success() {
-        return Err(anyhow!("Mi API call failed: {}, body: {}", status, body));
-    }
 
     // 6. Decrypt
     let key_bytes = general_purpose::STANDARD.decode(&signed_nonce)?;

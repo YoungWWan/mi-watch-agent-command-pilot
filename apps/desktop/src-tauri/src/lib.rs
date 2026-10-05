@@ -195,9 +195,8 @@ async fn require_device_session(app: AppHandle, mac: &str) -> Result<Arc<connect
 }
 
 async fn connect_and_auth_session(app: AppHandle, mac: String, session: Arc<connection::DeviceSession>) -> Result<OperationResult, String> {
-    let creds = account::xiaomi::load_saved_credentials().ok_or("请先登录小米账号")?;
     // Revalidate membership with the current account before opening a Bluetooth connection.
-    let devices = account::xiaomi::fetch_source_devices(&creds).await.map_err(|e| format!("无法验证账号设备: {e:#}"))?;
+    let devices = account::xiaomi::fetch_account_devices().await.map_err(|e| format!("无法验证账号设备: {e:#}"))?;
     let device = devices.iter().find(|device| device.mac.eq_ignore_ascii_case(&mac) && device.has_authkey)
         .ok_or("只能连接当前小米账号下已授权的设备")?;
     let device_name = device.name.clone();
@@ -644,23 +643,7 @@ async fn account_xiaomi_check_qr(lp_url: String) -> Result<account::xiaomi::QrPo
 
 #[tauri::command]
 async fn account_xiaomi_get_devices() -> Result<Vec<account::xiaomi::XiaomiDevice>, String> {
-    if let Some(creds) = account::xiaomi::load_saved_credentials() {
-        match account::xiaomi::fetch_source_devices(&creds).await {
-            Ok(devs) => Ok(devs),
-            Err(e) => {
-                let err_str = e.to_string();
-                log::warn!("[Xiaomi Account] Fetch failed: {err_str}");
-                if err_str.contains("401") || err_str.contains("auth err") || err_str.contains("Unauthorized") {
-                    log::warn!("[Xiaomi Account] Token expired (401), clearing expired session");
-                    let _ = account::xiaomi::clear_credentials();
-                    return Err("小米登录凭证已失效（401 鉴权未通过），请重新扫码授权".to_string());
-                }
-                Ok(account::xiaomi::load_cached_devices())
-            }
-        }
-    } else {
-        Ok(account::xiaomi::load_cached_devices())
-    }
+    account::xiaomi::fetch_account_devices().await.map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]

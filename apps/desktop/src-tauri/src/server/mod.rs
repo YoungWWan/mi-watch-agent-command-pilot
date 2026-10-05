@@ -1,4 +1,5 @@
 pub mod command_manager;
+mod kimi_bridge;
 pub mod models;
 pub mod notifier;
 pub mod pairing;

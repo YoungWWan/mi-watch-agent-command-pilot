@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Bell, RefreshCw, Shield, Trash2, ChevronDown, Check, Copy } from "lucide-react";
 import type { AgentSection } from "./AgentTabs";
+import { IntegrationStatus } from "./IntegrationStatus";
 
-interface HookStatus { key: string; name: string; configured: boolean; approval_installed: boolean; completion_installed: boolean; needs_repair: boolean; message: string; config_path: string }
+interface HookStatus { key: string; name: string; configured: boolean; approval_installed: boolean; approval_supported: boolean; attention_installed: boolean; completion_installed: boolean; needs_repair: boolean; message: string; config_path: string }
 interface PermissionRule { id: string; app: string; cwd: string; tool_name: string; preview: string; created_at?: number }
 interface NotificationSettings { ntfy_enabled: boolean; ntfy_server: string; ntfy_topic: string; ntfy_include_content: boolean }
 
@@ -58,8 +59,16 @@ export function IntegrationManagement({ activeSection }: { activeSection: AgentS
             <div className="agent-info">
               <h3>{hook.name}</h3>
               <div className="agent-state">
-                <span className={`status-dot ${hook.configured ? "online" : hook.needs_repair ? "warning" : ""}`} />
-                {hook.needs_repair ? "需要修复" : <>审批{hook.approval_installed ? "已启用" : "未启用"} · 完成通知{hook.completion_installed ? "已启用" : "未启用"}</>}
+                {hook.needs_repair && <IntegrationStatus state="warning">需要修复</IntegrationStatus>}
+                <IntegrationStatus state={hook.approval_installed ? "active" : "inactive"}>
+                  {hook.approval_supported === false ? "审批需在电脑确认" : `审批${hook.approval_installed ? "已启用" : "未启用"}`}
+                </IntegrationStatus>
+                {hook.approval_supported === false && <IntegrationStatus state={hook.attention_installed ? "active" : "inactive"}>
+                  等待审批提醒{hook.attention_installed ? "已启用" : "未启用"}
+                </IntegrationStatus>}
+                <IntegrationStatus state={hook.completion_installed ? "active" : "inactive"}>
+                  完成通知{hook.completion_installed ? "已启用" : "未启用"}
+                </IntegrationStatus>
               </div>
             </div>
             <button
@@ -73,12 +82,12 @@ export function IntegrationManagement({ activeSection }: { activeSection: AgentS
               <ChevronDown size={12} className={expandedHooks[hook.key] ? "rotated" : undefined} />
             </button>
             <button
-              className="secondary agent-action"
+              className={`secondary agent-action ${hook.configured ? "" : hook.needs_repair ? "agent-action-repair" : "agent-action-enable"}`}
               disabled={Boolean(busy)}
               aria-label={`${hook.configured ? "停用" : hook.needs_repair ? "修复" : "启用"} ${hook.name} 钩子`}
               onClick={() => void run(hook.key, async () => {
                 await invoke("hooks_toggle", { key: hook.key, enable: !hook.configured });
-                setMessage(`${hook.name} 钩子${hook.configured ? "已停用" : hook.needs_repair ? "已修复" : "已启用"}，请重开 Agent 会话。`);
+                setMessage(`${hook.name} 钩子${hook.configured ? "已停用" : hook.needs_repair ? "已修复" : "已启用"}，${hook.key === "kimi_code" ? "请重启 Kimi Code 后开始新会话" : "请重开 Agent 会话"}。`);
               })}
             >
               {busy === hook.key ? "处理中" : hook.configured ? "停用" : hook.needs_repair ? "修复" : "启用"}
