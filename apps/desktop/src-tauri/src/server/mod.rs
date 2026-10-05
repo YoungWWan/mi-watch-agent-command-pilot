@@ -300,6 +300,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn six_choice_questions_round_trip_and_invalid_commands_return_json() {
+        let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = reservation.local_addr().unwrap().port();
+        drop(reservation);
+        let server = ServerHandle::with_pairing(port, Arc::new(PairingManager::for_test()));
+        server.start().unwrap();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let url = format!("http://127.0.0.1:{port}");
+        let mut actions: Vec<_> = (0..6).map(|i| serde_json::json!({"id":format!("opt_{i}"),"text":format!("水果 {i}")})).collect();
+        actions.push(serde_json::json!({"id":"pc_input","text":"在电脑输入"}));
+        let mut payload = serde_json::json!({"content":"喜欢哪些水果？","timeout_seconds":10,"is_question":true,"is_multiselect":true,"actions":actions});
+
+        payload["is_question"] = serde_json::json!(false);
+        for path in ["/api/v1/commands", "/api/v1/commands/wait-reply"] {
+            let response = client.post(format!("{url}{path}")).json(&payload).send().await.unwrap();
+            assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+            let body = response.json::<serde_json::Value>().await.unwrap();
+            assert_eq!(body["status"], "error");
+            assert!(body["message"].as_str().unwrap().contains("1–6"));
+        }
+        assert!(server.manager.list_commands(10).is_empty());
+
+        payload["is_question"] = serde_json::json!(true);
+        let pending_request = client.post(format!("{url}/api/v1/commands/wait-reply")).json(&payload).timeout(std::time::Duration::from_secs(3));
+        let request = tokio::spawn(async move { pending_request.send().await.unwrap() });
+        let command = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Some(command) = server.manager.get_all_pending().first() { break command.clone(); }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }).await.unwrap();
+        let pending = client.get(format!("{url}/api/v1/watch/pending")).send().await.unwrap().json::<serde_json::Value>().await.unwrap();
+        assert_eq!(pending["command"]["actions"].as_array().unwrap().len(), 7);
+        let ids: Vec<_> = (0..6).map(|i| format!("opt_{i}")).collect();
+        let response = client.post(format!("{url}/api/v1/watch/commands/{}/reply", command.id))
+            .json(&serde_json::json!({"action_id":"opt_0","action_ids":ids})).send().await.unwrap();
+        assert!(response.status().is_success());
+        let response = request.await.unwrap();
+        assert!(response.status().is_success());
+        let reply = response.json::<serde_json::Value>().await.unwrap();
+        assert_eq!(reply["status"], "replied");
+        assert_eq!(reply["action_ids"], serde_json::json!(ids));
+        server.stop();
+    }
+
+    #[tokio::test]
     async fn stopping_closes_waiting_http_requests_and_expires_pending_commands() {
         let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = reservation.local_addr().unwrap().port();

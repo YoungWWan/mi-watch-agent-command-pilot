@@ -26,6 +26,23 @@ fn make_text_result(data: Value, is_error: bool) -> Value {
     })
 }
 
+fn parse_server_reply(status: reqwest::StatusCode, body: &[u8]) -> std::result::Result<Value, String> {
+    let parsed = serde_json::from_slice::<Value>(body);
+    if !status.is_success() {
+        let message = parsed.as_ref().ok()
+            .and_then(|value| value.get("message").or_else(|| value.get("error")))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                let text = String::from_utf8_lossy(body);
+                let preview: String = text.trim().chars().take(240).collect();
+                if preview.is_empty() { "empty response body".into() } else { preview }
+            });
+        return Err(format!("Watch Command Hub returned HTTP {status}: {message}"));
+    }
+    parsed.map_err(|error| format!("Invalid JSON from server (HTTP {status}): {error}"))
+}
+
 async fn handle_ask_question(arguments: &Value) -> Value {
     let question = match arguments.get("question").and_then(|v| v.as_str()) {
         Some(q) if !q.trim().is_empty() => q.trim(),
@@ -77,7 +94,10 @@ async fn handle_ask_question(arguments: &Value) -> Value {
         "actions": actions
     });
 
-    let client = reqwest::Client::new();
+    let client = match reqwest::Client::builder().no_proxy().build() {
+        Ok(client) => client,
+        Err(error) => return make_text_result(serde_json::json!({"status": "error", "message": format!("Watch Command Hub unavailable: {error}")}), true),
+    };
     let res = client
         .post(format!("{}/api/v1/commands/wait-reply", server_url()))
         .json(&payload)
@@ -86,9 +106,16 @@ async fn handle_ask_question(arguments: &Value) -> Value {
         .await;
 
     let reply: Value = match res {
-        Ok(r) => match r.json().await {
-            Ok(j) => j,
-            Err(e) => return make_text_result(serde_json::json!({"status": "error", "message": format!("Invalid JSON from server: {e}")}), true),
+        Ok(r) => {
+            let status = r.status();
+            let body = match r.bytes().await {
+                Ok(body) => body,
+                Err(error) => return make_text_result(serde_json::json!({"status": "error", "message": format!("Could not read Watch Command Hub response (HTTP {status}): {error}")}), true),
+            };
+            match parse_server_reply(status, &body) {
+                Ok(reply) => reply,
+                Err(message) => return make_text_result(serde_json::json!({"status": "error", "message": message}), true),
+            }
         },
         Err(e) => return make_text_result(serde_json::json!({"status": "error", "message": format!("Watch Command Hub unavailable: {e}")}), true),
     };
@@ -126,6 +153,38 @@ async fn handle_ask_question(arguments: &Value) -> Value {
         "question": question,
         "selected_options": selected_options
     }), false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::StatusCode;
+
+    #[test]
+    fn http_errors_report_status_and_server_validation_message() {
+        let body = serde_json::json!({"status":"error","message":"请设置 1–6 个操作按钮"}).to_string();
+        let error = parse_server_reply(StatusCode::BAD_REQUEST, body.as_bytes()).unwrap_err();
+        assert!(error.contains("HTTP 400 Bad Request"));
+        assert!(error.contains("请设置 1–6 个操作按钮"));
+        assert!(!error.contains("Invalid JSON"));
+    }
+
+    #[test]
+    fn empty_and_non_json_http_errors_keep_the_http_status() {
+        assert!(parse_server_reply(StatusCode::BAD_REQUEST, b"").unwrap_err().contains("HTTP 400 Bad Request: empty response body"));
+        let error = parse_server_reply(StatusCode::BAD_GATEWAY, b"upstream unavailable").unwrap_err();
+        assert!(error.contains("HTTP 502 Bad Gateway: upstream unavailable"));
+        let long_body = "错".repeat(300);
+        let error = parse_server_reply(StatusCode::BAD_GATEWAY, long_body.as_bytes()).unwrap_err();
+        assert_eq!(error.matches('错').count(), 240);
+    }
+
+    #[test]
+    fn successful_replies_still_require_valid_json() {
+        let reply = parse_server_reply(StatusCode::OK, br#"{"status":"replied","action_ids":["opt_0","opt_5"]}"#).unwrap();
+        assert_eq!(reply["action_ids"], serde_json::json!(["opt_0", "opt_5"]));
+        assert!(parse_server_reply(StatusCode::OK, b"").unwrap_err().contains("Invalid JSON from server (HTTP 200 OK)"));
+    }
 }
 
 pub async fn run_mcp_server() -> Result<()> {

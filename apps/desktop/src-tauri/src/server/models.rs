@@ -68,7 +68,13 @@ impl CommandCreate {
         }
         if let Some(actions) = &self.actions {
             let mut ids = std::collections::HashSet::new();
-            if actions.is_empty() || actions.len() > 6 { return Err("请设置 1–6 个操作按钮".into()); }
+            // A question can have six choices plus the separate computer fallback.
+            let has_computer_fallback = self.is_question == Some(true)
+                && actions.iter().any(|action| action.id == "pc_input");
+            let max_actions = if has_computer_fallback { 7 } else { 6 };
+            if actions.is_empty() || actions.len() > max_actions {
+                return Err("请设置 1–6 个操作按钮，选择题可额外添加一个电脑输入按钮".into());
+            }
             for action in actions {
                 if action.id.trim().is_empty() || action.text.trim().is_empty() || !ids.insert(&action.id) {
                     return Err("按钮名称和 ID 不能为空，ID 不能重复".into());
@@ -96,4 +102,27 @@ pub struct WatchPendingResponse {
     pub command: Option<Command>,
     pub commands: Vec<Command>,
     pub total: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn question_with_actions(ids: &[&str], is_question: bool) -> CommandCreate {
+        serde_json::from_value(serde_json::json!({
+            "content": "选择水果", "is_question": is_question,
+            "actions": ids.iter().map(|id| serde_json::json!({"id": id, "text": id})).collect::<Vec<_>>()
+        })).unwrap()
+    }
+
+    #[test]
+    fn six_choices_allow_one_separate_computer_fallback() {
+        let ids = ["opt_0", "opt_1", "opt_2", "opt_3", "opt_4", "opt_5", "pc_input"];
+        assert!(question_with_actions(&ids, true).validate().is_ok());
+        assert!(question_with_actions(&ids, false).validate().is_err());
+        assert!(question_with_actions(&ids[..6], true).validate().is_ok());
+        assert!(question_with_actions(&["opt_0", "opt_1", "opt_2", "opt_3", "opt_4", "opt_5", "opt_6"], true).validate().is_err());
+        assert!(question_with_actions(&["opt_0", "opt_1", "opt_2", "opt_3", "opt_4", "opt_5", "opt_6", "pc_input"], true).validate().is_err());
+        assert!(question_with_actions(&["opt_0", "opt_1", "opt_2", "opt_3", "opt_4", "pc_input", "pc_input"], true).validate().is_err());
+    }
 }
