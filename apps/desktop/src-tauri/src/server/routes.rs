@@ -57,11 +57,11 @@ async fn create_command(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
     Json(payload): Json<CommandCreate>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     if !is_loopback(&addr) {
-        return Err(StatusCode::FORBIDDEN);
+        return Err(command_error(StatusCode::FORBIDDEN, "Command creation requires a local connection"));
     }
-    payload.validate().map_err(|_| StatusCode::BAD_REQUEST)?;
+    payload.validate().map_err(|message| command_error(StatusCode::BAD_REQUEST, &message))?;
     let cmd = state.manager.create_command(payload);
     super::notifier::notify_command(cmd.clone());
     Ok(Json(serde_json::json!({
@@ -74,13 +74,17 @@ async fn create_command_and_wait(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
     Json(payload): Json<CommandCreate>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     if !is_loopback(&addr) {
-        return Err(StatusCode::FORBIDDEN);
+        return Err(command_error(StatusCode::FORBIDDEN, "Command creation requires a local connection"));
     }
-    payload.validate().map_err(|_| StatusCode::BAD_REQUEST)?;
+    payload.validate().map_err(|message| command_error(StatusCode::BAD_REQUEST, &message))?;
     let res = state.manager.create_and_wait(payload).await;
     Ok(Json(res))
+}
+
+fn command_error(status: StatusCode, message: &str) -> (StatusCode, Json<serde_json::Value>) {
+    (status, Json(serde_json::json!({ "status": "error", "message": message })))
 }
 
 async fn list_commands(
